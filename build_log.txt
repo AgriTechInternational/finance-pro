@@ -1,0 +1,20 @@
+
+> agritech-finance@7.2.0 build
+> vite build --emptyOutDir
+
+vite v8.0.3 building client environment for production...
+[2Ktransforming...✓ 1784 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   3.06 kB │ gzip:   1.26 kB
+dist/assets/index-BGZLP_b9.css   14.41 kB │ gzip:   3.63 kB
+dist/assets/index-DjVFcedp.js   557.91 kB │ gzip: 149.68 kB
+
+[33m[INEFFECTIVE_DYNAMIC_IMPORT] Warning:[0m src/supabase.js is dynamically imported by src/components/Settings.jsx but also statically imported by src/App.jsx, src/components/AdminManagement.jsx, src/components/LoginScreen.jsx, src/components/Security.jsx, src/lib/audit.js, ..., dynamic import will not move module into another chunk.
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 536ms

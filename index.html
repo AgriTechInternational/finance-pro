@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="google" content="notranslate" />
+    
+    <!-- iOS PWA Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="AgriTech" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    
+    <!-- Standard PWA Manifest -->
+    <link rel="manifest" href="/manifest.json" />
+    
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    
+    <title>AgriTech PRO v1.0.1</title>
+    
+    <!-- Nuclear Reset: Failsafe to clear deep browser cache/service workers -->
+    <script>
+      (function() {
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('nuke') === 'true') {
+          console.warn('NUCLEAR RESET TRIGGERED. PURGING ALL CACHES...');
+          
+          // 1. Unregister Service Workers
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(registrations) {
+              for(let registration of registrations) { registration.unregister(); }
+            });
+          }
+          
+          // 2. Clear Cache Storage
+          if ('caches' in window) {
+            caches.keys().then(function(names) {
+              for (let name of names) caches.delete(name);
+            });
+          }
+          
+          // 3. Clear Local & Session Storage
+          localStorage.clear();
+          sessionStorage.clear();
+          
+          // 4. Force Reload to a clean URL
+          setTimeout(() => {
+            window.location.href = window.location.pathname + '?v=' + Date.now();
+          }, 500);
+        }
+      })();
+    </script>
+
+    <!-- Self-Healing Loader: Detects Asset 404s and forces a hard refresh -->
+    <script>
+      window.addEventListener('error', function(e) {
+        if (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK') {
+          console.warn('Asset Load Failure Detected. Forcing absolute refresh...');
+          const lastReload = parseInt(localStorage.getItem('agritech_last_auto_reload') || '0');
+          const now = Date.now();
+          // Prevent infinite reload loops (max once every 10 seconds)
+          if (now - lastReload > 10000) {
+            localStorage.setItem('agritech_last_auto_reload', now.toString());
+            window.location.reload(true);
+          }
+        }
+      }, true);
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.jsx"></script>
+  </body>
+</html>

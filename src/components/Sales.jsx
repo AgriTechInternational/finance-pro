@@ -1,0 +1,405 @@
+import React, { useState } from 'react';
+import { formatDisplayDate, toISO } from '../lib/parseSheet';
+import { supabase, tables } from '../supabase';
+import DataEntryModal from './DataEntryModal';
+import { requestDeletion } from '../lib/audit';
+
+const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+
+const ALL_PARTNERS = ['Wageh', 'Nour', 'Haitham', 'Elwady', 'El Wady', 'Emad', 'Adel', 'Nagy', 'Mohamed', 'Tharwat'];
+
+function Sales({ data, user, role, isAdmin, isSuper }) {
+  const [isSaleModalOpen, setIsSaleModalOpen] = useState(false);
+  const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [newSale, setNewSale] = useState({
+    date: new Date().toISOString().split('T')[0],
+    customer: '', // To be set on open
+    product: '6L',
+    quantity: '',
+    pricePerBag: '',
+    paid: '',
+    note: ''
+  });
+  const [newPay, setNewPay] = useState({
+    date: new Date().toISOString().split('T')[0],
+    customer: '', // To be set on open
+    amount: '',
+    note: ''
+  });
+
+  if (!data) return (
+    <div style={{ padding: 60, textAlign: 'center', color: 'var(--text3)' }}>
+      <div style={{ fontSize: 24, marginBottom: 12 }}>🔄</div>
+      <div>Syncing Sales data with Google Sheets...</div>
+    </div>
+  );
+
+  const handleSaveSale = async () => {
+    if (!newSale.quantity || !newSale.pricePerBag) return alert("Please fill in quantity and price");
+    setIsSaving(true);
+    const total = parseFloat(newSale.quantity) * parseFloat(newSale.pricePerBag);
+    try {
+      // 1. Log the Sale transaction
+      const { error: saleErr } = await supabase.from(tables.TRANSACTIONS).insert([
+        {
+          partner_name: newSale.customer || tab,
+          date: newSale.date,
+          type: 'Debit', // Sale is a debt from customer perspective
+          amount: total,
+          notes: `Sale: ${newSale.quantity}x ${newSale.product} @ ${newSale.pricePerBag} EGP. ${newSale.note}`
+        }
+      ]);
+      if (saleErr) throw saleErr;
+
+      // 2. Log the Downpayment if any
+      if (parseFloat(newSale.paid) > 0) {
+        const { error: payErr } = await supabase.from(tables.TRANSACTIONS).insert([
+          {
+            partner_name: newSale.customer || tab,
+            date: newSale.date,
+            type: 'Credit', // Payment reduces debt
+            amount: parseFloat(newSale.paid),
+            notes: `Downpayment for sale on ${newSale.date}`
+          }
+        ]);
+        if (payErr) throw payErr;
+      }
+
+      setIsSaleModalOpen(false);
+      window.location.reload();
+    } catch (e) {
+      alert("Error: " + e.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSavePayment = async () => {
+    if (!newPay.amount) return alert("Please enter amount");
+    setIsSaving(true);
+    const isTest = localStorage.getItem('finance_pro_test_mode') === 'true';
+    try {
+      const { error } = await supabase.from(tables.TRANSACTIONS).insert([
+        {
+          partner_name: newPay.customer || tab,
+          date: newPay.date,
+          type: 'Credit',
+          amount: parseFloat(newPay.amount),
+          notes: newPay.note || 'Payment Received',
+          is_dev_test: isTest
+        }
+      ]);
+      if (error) throw error;
+      setIsPayModalOpen(false);
+      window.location.reload();
+    } catch (e) {
+      alert("Error: " + e.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async (item) => {
+    if (!isAdmin) return;
+    if (!window.confirm("Are you sure you want to request deletion for this record? This will require approval from a Super User.")) return;
+    
+    setIsSaving(true);
+    try {
+      // Sales transactions are in the partner_transactions table
+      const { error } = await requestDeletion(tables.TRANSACTIONS, item.id, user.email);
+      if (error) throw error;
+      window.location.reload();
+    } catch (e) {
+      alert("Delete Request Failed: " + e.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const { sales = [] } = data;
+
+  // Build flat list of all customers found in data + known defaults
+  const foundPartners = [...new Set(sales.map(s => s.customer))];
+  const allTabs = [...new Set([...ALL_PARTNERS, ...foundPartners])];
+
+  const [tab, setTab] = useState(foundPartners[0] || allTabs[0]);
+
+  const customerSales = sales.filter(s => s.customer === tab);
+
+  // Only count rows with totalPrice > 0 as sales transactions
+  const salesRows    = customerSales.filter(s => s.totalPrice > 0);
+  const totalPrice   = salesRows.reduce((s, r) => s + r.totalPrice, 0);
+  // Total paid = all paid amounts (includes payment-only rows)
+  const totalPaid    = customerSales.reduce((s, r) => s + (r.paid || 0), 0);
+  // Outstanding = totalPrice minus everything paid (including standalone payments)
+  const totalRemain  = Math.max(0, totalPrice - totalPaid);
+
+  const overallRevenue = sales.filter(s => s.totalPrice > 0).reduce((s, r) => s + r.totalPrice, 0);
+  const overallPaid    = sales.reduce((s, r) => s + (r.paid || 0), 0);
+  const overallRemain  = Math.max(0, overallRevenue - overallPaid);
+
+  const hasSales = salesRows.length > 0 && totalPrice > 0;
+
+  return (
+    <div>
+      <div className="page-header">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div className="page-title">Revenue &amp; Sales</div>
+            <div className="page-sub">Live from Google Sheets + Supabase — all customer tabs</div>
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button className="btn btn-secondary" onClick={() => {
+              setNewPay({...newPay, customer: tab});
+              setIsPayModalOpen(true);
+            }}>
+              💳 Add Payment
+            </button>
+            <button className="btn btn-primary" onClick={() => {
+              setNewSale({...newSale, customer: tab});
+              setIsSaleModalOpen(true);
+            }}>
+              <span>+</span> New Sale
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Overall summary bar */}
+      {sales.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 20 }}>
+          <div className="kpi" style={{ '--kpi-color': 'var(--accent2)' }}>
+            <div className="kpi-label">All Revenue</div>
+            <div className="kpi-value" style={{ color: 'var(--accent2)' }}>{fmt(overallRevenue)} EGP</div>
+            <div className="kpi-sub">{foundPartners.length} active customers</div>
+          </div>
+          <div className="kpi" style={{ '--kpi-color': 'var(--accent)' }}>
+            <div className="kpi-label">Total Collected</div>
+            <div className="kpi-value" style={{ color: 'var(--accent)' }}>{fmt(overallPaid)} EGP</div>
+            <div className="kpi-sub">Cash received</div>
+          </div>
+          <div className="kpi" style={{ '--kpi-color': overallRemain > 0 ? 'var(--accent3)' : 'var(--accent2)' }}>
+            <div className="kpi-label">Outstanding</div>
+            <div className="kpi-value" style={{ color: overallRemain > 0 ? 'var(--accent3)' : 'var(--accent2)' }}>
+              {overallRemain > 0 ? `${fmt(overallRemain)} EGP` : '✓ Fully Settled'}
+            </div>
+            <div className="kpi-sub">{overallRemain > 0 ? 'Uncollected balance' : 'No outstanding balance'}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Partner tabs */}
+      <div className="tabs" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
+        {allTabs.map(c => {
+          const hasData = sales.some(s => s.customer === c && s.totalPrice > 0);
+          const custSales = sales.filter(s => s.customer === c);
+          const custPrice = custSales.filter(s => s.totalPrice > 0).reduce((s, r) => s + r.totalPrice, 0);
+          const custPaid  = custSales.reduce((s, r) => s + (r.paid || 0), 0);
+          const custOwed  = Math.max(0, custPrice - custPaid);
+          return (
+            <div
+              key={c}
+              className={`tab${tab === c ? ' active' : ''}`}
+              onClick={() => setTab(c)}
+              style={{ position: 'relative', opacity: hasData ? 1 : 0.5 }}
+            >
+              {c}
+              {hasData && (
+                <span style={{
+                  position: 'absolute', top: 4, right: 4,
+                  width: 6, height: 6, borderRadius: '50%',
+                  background: custOwed > 0 ? '#f59e0b' : 'var(--accent2)',
+                }} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Per-customer KPIs */}
+      {hasSales && (
+        <div className="kpi-grid" style={{ marginBottom: 16 }}>
+          <div className="kpi" style={{ '--kpi-color': 'var(--accent2)' }}>
+            <div className="kpi-label">Total Amount</div>
+            <div className="kpi-value">{fmt(totalPrice)} EGP</div>
+          </div>
+          <div className="kpi" style={{ '--kpi-color': 'var(--accent)' }}>
+            <div className="kpi-label">Total Paid</div>
+            <div className="kpi-value">{fmt(totalPaid)} EGP</div>
+          </div>
+          <div className="kpi" style={{ '--kpi-color': totalRemain > 0 ? 'var(--accent3)' : 'var(--accent2)' }}>
+            <div className="kpi-label">Outstanding</div>
+            <div className="kpi-value" style={{ color: totalRemain > 0 ? 'var(--accent3)' : 'var(--accent2)' }}>
+              {totalRemain > 0 ? `${fmt(totalRemain)} EGP` : '✓ Fully Paid'}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="card">
+        <div className="table-wrap">
+          {!hasSales ? (
+            <div className="empty" style={{ padding: '40px 0', textAlign: 'center' }}>
+              <div style={{ fontSize: 32, marginBottom: 12 }}>📋</div>
+              <div style={{ color: 'var(--text3)', fontSize: 14 }}>
+                No sales recorded for <strong style={{ color: 'white' }}>{tab}</strong>
+              </div>
+              {sales.length === 0 && (
+                <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 8 }}>
+                  Connect a sheet in ⚙️ Settings to see live data
+                </div>
+              )}
+            </div>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Description</th>
+                  <th>Total Price</th>
+                  <th>Paid</th>
+                  <th>Remaining</th>
+                  <th>Payment Type</th>
+                  <th>Status</th>
+                  {isAdmin && <th style={{ textAlign: "right" }}>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {customerSales.map((s, i) => {
+                  // Determine this row's status taking into account it may be payment-only
+                  const isSaleRow    = s.totalPrice > 0;
+                  const isPaymentRow = !isSaleRow && s.paid > 0;
+                  const rowRemain    = s.remain || 0;
+                  return (
+                    <tr key={i} style={{ opacity: isPaymentRow ? 0.8 : 1 }}>
+                      <td style={{ fontSize: 12, fontWeight: 600 }}>
+                        {formatDisplayDate(s.date)}
+                      </td>
+                      <td style={{ fontSize: 12, color: 'var(--text3)' }}>
+                        {isPaymentRow ? '💳 Payment Received' : (s.description || '—')}
+                      </td>
+                      <td className={isSaleRow ? 'amount-pos' : ''} style={{ color: isSaleRow ? undefined : 'var(--text3)' }}>
+                        {isSaleRow ? fmt(s.totalPrice) : '—'}
+                      </td>
+                      <td className="amount-pos">{s.paid > 0 ? fmt(s.paid) : '—'}</td>
+                      <td className={rowRemain > 0 ? 'amount-neg' : 'amount-pos'}>
+                        {isSaleRow
+                          ? (rowRemain > 0 ? `(${fmt(rowRemain)})` : '—')
+                          : '—'}
+                      </td>
+                      <td style={{ fontSize: 11, color: 'var(--text3)' }}>
+                        {s.paymentType || '—'}
+                      </td>
+                      <td>
+                        {isPaymentRow
+                          ? <span className="badge" style={{ background: 'rgba(59,130,246,0.15)', color: '#60a5fa', border: '1px solid rgba(59,130,246,0.3)' }}>Payment</span>
+                          : rowRemain > 0
+                            ? <span className="badge badge-yellow">Partial</span>
+                            : <span className="badge badge-green">Settled</span>}
+                      </td>
+                      {isAdmin && (
+                        <td style={{ textAlign: 'right' }}>
+                          {!s.is_delete_pending ? (
+                            <button 
+                              onClick={() => handleDelete(s)} 
+                              style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', opacity: 0.6 }}
+                              title="Request Deletion"
+                            >
+                              🗑️
+                            </button>
+                          ) : (
+                            <span title="Waiting for Super User approval" style={{ fontSize: 10, color: '#f59e0b', fontWeight: 700 }}>PENDING</span>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      {/* NEW SALE MODAL */}
+      <DataEntryModal 
+        title={`New Sale — ${tab}`} 
+        isOpen={isSaleModalOpen} 
+        onClose={() => setIsSaleModalOpen(false)} 
+        onSave={handleSaveSale}
+        loading={isSaving}
+      >
+        <div className="field">
+          <label>Customer</label>
+          <select value={newSale.customer} onChange={e => setNewSale({...newSale, customer: e.target.value})}>
+            {allTabs.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Date</label>
+          <input type="date" value={newSale.date} onChange={e => setNewSale({...newSale, date: e.target.value})} />
+        </div>
+        <div className="field">
+          <label>Product Type</label>
+          <select value={newSale.product} onChange={e => setNewSale({...newSale, product: e.target.value})}>
+            <option value="6L">6 Liter Bags</option>
+            <option value="8L">8 Liter Bags</option>
+          </select>
+        </div>
+        <div className="grid-2">
+          <div className="field">
+            <label>Quantity (Bags)</label>
+            <input type="number" placeholder="0" value={newSale.quantity} onChange={e => setNewSale({...newSale, quantity: e.target.value})} />
+          </div>
+          <div className="field">
+            <label>Price per Bag (EGP)</label>
+            <input type="number" placeholder="0.00" value={newSale.pricePerBag} onChange={e => setNewSale({...newSale, pricePerBag: e.target.value})} />
+          </div>
+        </div>
+        <div style={{ padding: '10px 14px', background: 'rgba(255,255,255,0.05)', borderRadius: 8, fontSize: 13 }}>
+          <strong>Total Amount:</strong> {fmt(parseFloat(newSale.quantity || 0) * parseFloat(newSale.pricePerBag || 0))} EGP
+        </div>
+        <div className="field">
+          <label>Downpayment / Paid Now (EGP)</label>
+          <input type="number" placeholder="0.00" value={newSale.paid} onChange={e => setNewSale({...newSale, paid: e.target.value})} />
+        </div>
+        <div className="field">
+          <label>Note (Optional)</label>
+          <input type="text" placeholder="Add specific details..." value={newSale.note} onChange={e => setNewSale({...newSale, note: e.target.value})} />
+        </div>
+      </DataEntryModal>
+
+      {/* ADD PAYMENT MODAL */}
+      <DataEntryModal 
+        title={`Add Payment — ${tab}`} 
+        isOpen={isPayModalOpen} 
+        onClose={() => setIsPayModalOpen(false)} 
+        onSave={handleSavePayment}
+        loading={isSaving}
+      >
+        <div className="field">
+          <label>Customer</label>
+          <select value={newPay.customer} onChange={e => setNewPay({...newPay, customer: e.target.value})}>
+            {allTabs.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Date</label>
+          <input type="date" value={newPay.date} onChange={e => setNewPay({...newPay, date: e.target.value})} />
+        </div>
+        <div className="field">
+          <label>Amount (EGP)</label>
+          <input type="number" placeholder="0.00" value={newPay.amount} onChange={e => setNewPay({...newPay, amount: e.target.value})} />
+        </div>
+        <div className="field">
+          <label>Note / Reference</label>
+          <input type="text" placeholder="Installment, cash, etc." value={newPay.note} onChange={e => setNewPay({...newPay, note: e.target.value})} />
+        </div>
+      </DataEntryModal>
+    </div>
+  );
+}
+
+export default Sales;
