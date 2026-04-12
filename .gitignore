@@ -1,0 +1,7 @@
+node_modules/
+dist/
+electron/
+"AgriTech Finance.app"/
+.DS_Store
+*.log
+package-lock.json
