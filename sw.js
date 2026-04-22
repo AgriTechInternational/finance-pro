@@ -2,7 +2,7 @@
 // AgriTech Finance Pro — Enhanced Service Worker
 // Supports: Caching, Push Notifications, Background Sync
 // ============================================================
-const CACHE_NAME = 'agritech-pro-cache-v8-0-4';
+const CACHE_NAME = 'agritech-pro-cache-v8-0-5';
 const BADGE_COUNT_KEY = 'agritech_badge_count';
 
 // ── INSTALL ──
