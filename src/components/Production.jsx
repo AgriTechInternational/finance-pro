@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { formatDisplayDate, getShiftLabel } from '../lib/parseSheet';
 import { requestDeletion } from '../lib/audit';
+import { clearEngineCache } from '../lib/useSheetEngine';
 
 const fmtNum = (n) => Number(n || 0).toLocaleString('en-US');
 const fmtKg  = (n) => Number(n || 0).toLocaleString('en-EG', { maximumFractionDigits: 0 });
@@ -8,6 +9,7 @@ const pct    = (n) => (Number(n || 0) * 100).toFixed(1) + '%';
 
 function Production({ data, globalStats, user, role, isAdmin, isSuper }) {
   const [activeTab, setActiveTab] = useState('overview');
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   if (!data) return (
     <div style={{ padding: 60, textAlign: 'center', color: 'var(--text3)' }}>
@@ -35,7 +37,7 @@ function Production({ data, globalStats, user, role, isAdmin, isSuper }) {
   
   // Rolling warehouse stock from engine (which is already cross-month)
   // or favor globalStats if available to ensure "All Months" accuracy.
-  const warehouseAvailKg = globalStats?.matAvailableKg || availableKg;
+  const warehouseAvailKg = (globalStats?.isYTD || !availableKg) ? (globalStats?.matAvailableKg || availableKg) : availableKg;
   const totalProducedKg  = summary.totalProducedKg  || 0;
   const totalProducedBags = summary.totalProducedBags || 0;
   const totalProducedTons = summary.totalProduced    || 0;
@@ -56,12 +58,15 @@ function Production({ data, globalStats, user, role, isAdmin, isSuper }) {
   const handleDelete = async (item) => {
     if (!isAdmin) return;
     if (!item.id) return alert("Historical logs from Google Sheets cannot be deleted from the app.");
-    
-    if (!window.confirm("Are you sure you want to request deletion for this production log? This will require approval from a Super User.")) return;
-    
+    setConfirmDeleteId(item.id);
+  };
+
+  const handleConfirmDelete = async (item) => {
+    setConfirmDeleteId(null);
     try {
       const { error } = await requestDeletion('production', item.id, user.email);
       if (error) throw error;
+      clearEngineCache();
       window.location.reload();
     } catch (e) {
       alert("Delete Request Failed: " + e.message);
@@ -148,26 +153,31 @@ function Production({ data, globalStats, user, role, isAdmin, isSuper }) {
           }}>
             <div style={{ fontSize: 60 }}>📦</div>
             <div>
-              <div style={{ fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', color: '#60a5fa', marginBottom: 10 }}>Raw Material Available (X)</div>
+              <div style={{ fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', color: '#60a5fa', marginBottom: 10 }}>Total Stock in Warehouse (Inflow)</div>
               <div style={{ fontSize: 72, fontWeight: 900, color: 'var(--text1)', fontFamily: 'var(--mono)', lineHeight: 1 }}>
-                {fmtKg(warehouseAvailKg)}
+                {fmtKg(summary.rawMaterialStock + rawMaterialKg)}
                 <span style={{ fontSize: 28, marginLeft: 14, opacity: 0.5 }}>kg</span>
               </div>
               <div style={{ fontSize: 13, color: 'var(--text3)', marginTop: 12 }}>
-                  Total material in warehouse (including leftovers)
-                </div>
+                Total material available this month (Opening: {fmtKg(summary.rawMaterialStock)} + Purchased: {fmtKg(rawMaterialKg)})
+              </div>
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 20 }}>
+            <div className="card shadow-soft" style={{ padding: 24, borderLeft: '4px solid #f59e0b' }}>
+              <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', color: '#f59e0b', marginBottom: 8 }}>Received (Purchased)</div>
+              <div style={{ fontSize: 28, fontWeight: 900, fontFamily: 'var(--mono)' }}>{fmtKg(rawMaterialKg)} <span style={{ fontSize: 14, opacity: 0.5 }}>kg</span></div>
+              <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 6 }}>Total raw materials added this month</div>
+            </div>
             <div className="card shadow-soft" style={{ padding: 24, borderLeft: '4px solid #10b981' }}>
-              <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', color: '#10b981', marginBottom: 8 }}>Used in Production (This Month)</div>
+              <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', color: '#10b981', marginBottom: 8 }}>Used in Production</div>
               <div style={{ fontSize: 28, fontWeight: 900, fontFamily: 'var(--mono)' }}>{fmtKg(totalUsedKg)} <span style={{ fontSize: 14, opacity: 0.5 }}>kg</span></div>
               <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 6 }}>{(totalUsedKg/1000).toFixed(3)} tons processed</div>
             </div>
-            <div className="card shadow-soft" style={{ padding: 24, borderLeft: '4px solid #f59e0b' }}>
-              <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', color: '#f59e0b', marginBottom: 8 }}>Remains so far (Current Month Only)</div>
-              <div style={{ fontSize: 28, fontWeight: 900, fontFamily: 'var(--mono)' }}>{fmtKg(thisMonthRemainsKg)} <span style={{ fontSize: 14, opacity: 0.5 }}>kg</span></div>
-              <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 6 }}>Received {fmtKg(rawMaterialKg)} − Used {fmtKg(totalUsedKg)}</div>
+            <div className="card shadow-soft" style={{ padding: 24, borderLeft: '4px solid var(--accent)', background: 'rgba(59,130,246,0.03)' }}>
+              <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', color: 'var(--accent)', marginBottom: 8 }}>Real-time Available Stock</div>
+              <div style={{ fontSize: 28, fontWeight: 900, fontFamily: 'var(--mono)', color: 'var(--accent)' }}>{fmtKg(warehouseAvailKg)} <span style={{ fontSize: 14, opacity: 0.5 }}>kg</span></div>
+              <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 6 }}>Current absolute factory leftover</div>
             </div>
           </div>
         </div>
@@ -185,7 +195,7 @@ function Production({ data, globalStats, user, role, isAdmin, isSuper }) {
             <div>
               <div style={{ fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.2em', color: '#34d399', marginBottom: 10 }}>Total Finished Product (Y)</div>
               <div style={{ fontSize: 72, fontWeight: 900, color: 'var(--text1)', fontFamily: 'var(--mono)', lineHeight: 1 }}>
-                {fmtKg(totalProducedKg)}
+                {fmtKg(summary.totalProducedKg)}
                 <span style={{ fontSize: 28, marginLeft: 14, opacity: 0.5 }}>kg</span>
               </div>
               <div style={{ fontSize: 13, color: 'var(--text3)', marginTop: 12 }}>{fmtNum(totalProducedBags)} bags · {totalProducedTons.toFixed(2)} tons</div>
@@ -240,7 +250,14 @@ function Production({ data, globalStats, user, role, isAdmin, isSuper }) {
                       {isAdmin && (
                         <td style={{ padding: '14px 20px', textAlign: 'right' }}>
                           {r.id ? (
-                            !r.is_delete_pending ? (
+                            r.is_delete_pending ? (
+                              <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 700 }}>PENDING</span>
+                            ) : confirmDeleteId === r.id ? (
+                              <div style={{ display: 'flex', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>
+                                <button className="btn" style={{ padding: '2px 8px', fontSize: 9, background: 'var(--danger)', border: 'none' }} onClick={() => handleConfirmDelete(r)}>Delete</button>
+                                <button className="btn" style={{ padding: '2px 8px', fontSize: 9 }} onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                              </div>
+                            ) : (
                               <button 
                                 onClick={() => handleDelete(r)} 
                                 style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', opacity: 0.6 }}
@@ -248,8 +265,6 @@ function Production({ data, globalStats, user, role, isAdmin, isSuper }) {
                               >
                                 🗑️
                               </button>
-                            ) : (
-                              <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 700 }}>PENDING</span>
                             )
                           ) : (
                             <span style={{ fontSize: 9, color: 'var(--text3)' }}>—</span>

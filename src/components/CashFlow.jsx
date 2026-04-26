@@ -25,13 +25,15 @@ function CashFlow({ data, carryForward, globalStats }) {
   const handleSave = async () => {
     if (!newMove.amount) return alert("Please enter amount");
     setIsSaving(true);
+    const isTest = localStorage.getItem('finance_pro_test_mode') === 'true';
     try {
       const { error } = await supabase.from(tables.CASHFLOW).insert([
         {
           date: newMove.date,
           amount: parseFloat(newMove.amount),
           type: newMove.type,
-          description: newMove.description
+          description: newMove.description,
+          is_dev_test: isTest
         }
       ]);
       if (error) throw error;

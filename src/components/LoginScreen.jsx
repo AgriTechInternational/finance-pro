@@ -3,56 +3,100 @@ import { supabase, tables } from '../supabase';
 
 const LAST_EMAIL_KEY = 'agritech_last_email';
 
-const LoginScreen = ({ onLogin }) => {
+const LoginScreen = ({ setUser }) => {
   const [email, setEmail] = useState(() => localStorage.getItem(LAST_EMAIL_KEY) || '');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading]   = useState(false);
   const [isSignUp, setIsSignUp] = useState(false);
+  const [showRescue, setShowRescue] = useState(false);
 
   const handleLogin = async (e) => {
-    e.preventDefault();
-    setLoading(true); setError('');
+    if (e) e.preventDefault();
+    
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !password) {
+      setError('Please enter both email and password');
+      return;
+    }
+
+    setLoading(true); 
+    setError('');
+    setShowRescue(false);
+
+    // Force sign out first to clear any "ghost" sessions that might be holding a lock
+    try { 
+      await supabase.auth.signOut().catch(() => {}); 
+      localStorage.removeItem('agritech-finance-v1'); // Manual purge to be absolutely sure
+    } catch (err) { console.warn('Pre-login purge ignored:', err); }
+
+    // Safety Timeout: Prevent indefinite hang if Supabase takes too long
+    const timeoutId = setTimeout(() => {
+      setLoading(currentLoading => {
+        if (currentLoading) {
+          setError('Connection Timeout: The security vault is not responding. This usually happens during high network congestion or session lockups.');
+          setShowRescue(true);
+          return false;
+        }
+        return false;
+      });
+    }, 12000); // 12 seconds for extra buffer
+
     try {
       if (isSignUp) {
-        const { data, error: signUpError } = await supabase.auth.signUp({ email, password });
+        console.log('[Auth] Attempting Sign Up...');
+        const { data, error: signUpError } = await supabase.auth.signUp({ 
+          email: cleanEmail, 
+          password 
+        });
         if (signUpError) throw signUpError;
         if (!data.user) throw new Error('Sign up failed');
 
-        const defaultRole = email.toLowerCase() === 'agritech-production@hotmail.com' ? 'SUPER_ADMIN' : 'PENDING';
+        const defaultRole = cleanEmail.toLowerCase() === 'agritech-production@hotmail.com' ? 'SUPER_ADMIN' : 'PENDING';
         
         const { error: profileError } = await supabase
           .from(tables.PROFILES)
-          .upsert({ id: data.user.id, email, role: defaultRole });
+          .upsert({ id: data.user.id, email: cleanEmail, role: defaultRole });
 
         if (profileError) throw profileError;
-        // Remember email for next visit
-        localStorage.setItem(LAST_EMAIL_KEY, email);
+        localStorage.setItem(LAST_EMAIL_KEY, cleanEmail);
       } else {
-        const { data, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+        console.log('[Auth] Attempting Sign In...');
+        const { data, error: signInError } = await supabase.auth.signInWithPassword({ 
+          email: cleanEmail, 
+          password 
+        });
+        
         if (signInError) throw signInError;
         if (!data.user) throw new Error('Sign in failed');
-        // Remember email for next visit (persistent login UX)
-        localStorage.setItem(LAST_EMAIL_KEY, email);
-
-        // Check if profile exists, if not create as PENDING
-        const { data: profile } = await supabase
-          .from(tables.PROFILES)
-          .select('role')
-          .eq('id', data.user.id)
-          .single();
         
-        if (email.toLowerCase() === 'agritech-production@hotmail.com' && profile?.role !== 'SUPER_ADMIN') {
-          await supabase.from(tables.PROFILES).update({ role: 'SUPER_ADMIN' }).eq('id', data.user.id);
-        } else if (!profile) {
-          await supabase.from(tables.PROFILES).insert({ id: data.user.id, email, role: 'PENDING' });
-        }
+        localStorage.setItem(LAST_EMAIL_KEY, cleanEmail);
+        console.log('[Auth] Sign In Successful - Direct Injecting User State');
+        
+        // DIRECT INJECT: Bypass the background listener for immediate UI transition
+        if (setUser) setUser(data.user);
       }
     } catch (err) {
+      console.error('[Auth] Critical Error:', err);
       setError(err.message || 'Authentication Failed');
     } finally {
-      setLoading(false);
+      clearTimeout(timeoutId);
+      // Small delay to prevent flickering
+      setTimeout(() => setLoading(false), 500);
     }
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      handleLogin(e);
+    }
+  };
+
+  const handleRescueReset = () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    // Use the Nuclear Reset parameter
+    window.location.href = window.location.pathname + '?nuke=true';
   };
 
   return (
@@ -72,20 +116,50 @@ const LoginScreen = ({ onLogin }) => {
         <div className="login-v2-card">
           <form className="login-v2-form" onSubmit={handleLogin}>
             {error && (
-              <div className="login-v2-error">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                <span>{error}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div className="login-v2-error">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  <span>{error}</span>
+                </div>
+                
+                {showRescue && (
+                  <button 
+                    type="button" 
+                    onClick={handleRescueReset}
+                    style={{ 
+                      background: '#ef4444', color: 'white', border: 'none', 
+                      padding: '12px', borderRadius: '12px', fontWeight: 800, 
+                      fontSize: '11px', cursor: 'pointer', textTransform: 'uppercase'
+                    }}
+                  >
+                    ☢️ Force System Rescue & Reload
+                  </button>
+                )}
               </div>
             )}
             
             <div className="login-v2-field">
               <label>Clearance Ident</label>
-              <input type="email" required placeholder="engineer@agritech.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+              <input 
+                type="email" 
+                required 
+                placeholder="engineer@agritech.com" 
+                value={email} 
+                onChange={(e) => setEmail(e.target.value)} 
+                onKeyDown={handleKeyDown}
+              />
             </div>
 
             <div className="login-v2-field">
               <label>Access Protocol</label>
-              <input type="password" required placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <input 
+                type="password" 
+                required 
+                placeholder="••••••••" 
+                value={password} 
+                onChange={(e) => setPassword(e.target.value)} 
+                onKeyDown={handleKeyDown}
+              />
             </div>
 
             <div className="login-v2-actions">
@@ -103,17 +177,12 @@ const LoginScreen = ({ onLogin }) => {
         <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center' }}>
           <p className="login-v2-footer-text flex items-center justify-center gap-2" style={{ marginTop: 0 }}>
             <span>Secure Cloud Proxy Subsystem</span>
-            <span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: '4px', border: '1px solid #334155', fontSize: '8px', color: '#64748b' }}>v1.0.1</span>
+            <span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: '4px', border: '1px solid #334155', fontSize: '8px', color: '#64748b' }}>v8.2.0</span>
           </p>
           
           <button 
             type="button"
-            onClick={() => {
-              if (window.confirm("This will clear your local session and release browser locks to fix the 'Lock Stolen' error. Use this if the system feels stuck. Proceed?")) {
-                localStorage.clear();
-                window.location.reload(true);
-              }
-            }}
+            onClick={handleRescueReset}
             style={{ 
               background: 'transparent', border: '1px solid rgba(255,255,255,0.05)', 
               color: '#475569', fontSize: '8px', fontWeight: 900, textTransform: 'uppercase', 

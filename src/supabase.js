@@ -3,7 +3,22 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = 'https://tctgihojkynjpmsheyhq.supabase.co';
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjdGdpaG9qa3luanBtc2hleWhxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MzQzMzEsImV4cCI6MjA5MDIxMDMzMX0.anwpFu3gVOiYMOLGQPBUhejz5ouRs31RFTWEVxNyMEc';
 
-// SINGLETON PATTERN: Prevents "Lock Stolen" errors in high-refresh environments like Vite
+// CUSTOM STORAGE: Explicitly avoid navigator.locks to prevent "Stuck" login hangs
+const customStorage = {
+  getItem: (key) => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem(key);
+  },
+  setItem: (key, value) => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(key, value);
+  },
+  removeItem: (key) => {
+    if (typeof window === 'undefined') return;
+    localStorage.removeItem(key);
+  }
+};
+
 const getSupabase = () => {
   if (typeof window !== 'undefined' && window.__supabaseInstance) {
     return window.__supabaseInstance;
@@ -11,11 +26,10 @@ const getSupabase = () => {
   const client = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
       storageKey: 'agritech-finance-v1',
+      storage: customStorage, // Use non-locking storage
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: false,
-      // Using implicit flow to avoid NavigatorLockAcquireTimeoutError 
-      // which occurs with pkce when multiple tabs are open on same origin
       flowType: 'implicit'
     }
   });
@@ -33,7 +47,11 @@ export const tables = {
   TRANSACTIONS: 'partner_transactions',
   INVENTORY: 'inventory',
   CASHFLOW: 'cashflow',
-  SHEET_CONFIGS: 'sheet_configs'
+  SHEET_CONFIGS: 'sheet_configs',
+  PRODUCTION: 'production',
+  MATERIALS: 'inventory',
+  SALES: 'sales',
+  ATTENDANCE: 'attendance'
 };
 
 export const fmt   = n  => n == null ? "—" : Number(n).toLocaleString("en-EG");

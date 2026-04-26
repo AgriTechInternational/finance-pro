@@ -28,6 +28,7 @@ import SyncBar     from "./components/SyncBar";
 import AdminManagement from "./components/AdminManagement";
 import Security from "./components/Security";
 import NotificationBell from "./components/NotificationBell";
+import SearchEngine from "./components/SearchEngine";
 
 const NAV = [
   { id: "dashboard",    label: "Finance Overview",    icon: "◉",  section: "Overview",    minRole: "ENGINEER" },
@@ -62,7 +63,7 @@ export default function App() {
   const [mustReset, setMustReset] = useState(false);
   const [resetPwd, setResetPwd] = useState("");
   const [isResetting, setIsResetting] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth > 1024);
   const isTestMode = localStorage.getItem('finance_pro_test_mode') === 'true';
   const [page,     setPage]    = useState("dashboard");
   const [newUpdates,  setNewUpdates]  = useState([]);
@@ -91,17 +92,53 @@ export default function App() {
   const sheetResult = useSheetEngine(isYTD ? null : activeSheetId, memoMonths);
   const ytdResult   = useYTDEngine(memoMonths);  // always run in background for globalStats (warehouse carryforward)
   
-  const { data, loading: sheetLoading, error, lastSyncedAt, refresh } = isYTD ? ytdResult : sheetResult;
+  const { data, loading: sheetLoading, loadingStage, error, lastSyncedAt, refresh } = isYTD ? ytdResult : sheetResult;
 
+  // ── INITIAL SYSTEM BOOTSTRAP ──
   useEffect(() => {
-    const checkUser = async (u) => {
-      if (isCheckingUserRef.current) return;
-      isCheckingUserRef.current = true;
+    document.documentElement.setAttribute('translate', 'no');
+    document.body.setAttribute('translate', 'no');
 
+    // ── START KEEP-ALIVE + PWA SETUP ──
+    startSessionKeepAlive();
+    registerServiceWorker().then(reg => {
+      // Auto-subscribe if already granted (on reload)
+      if (reg && typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'granted') {
+        subscribeToPush(reg);
+      }
+    });
+  }, []);
+
+  // ── AUTHENTICATION: The fast path to unmounting the login screen ──
+  useEffect(() => {
+    const timer = setTimeout(() => { if (isLoading) setLoadingTimeout(true); }, 5000);
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log("[Auth] State Event:", event, session?.user?.id);
+      
+      // IMMEDIATE UI TRANSITION
+      // Setting user immediately ensures LoginScreen unmounts without waiting for data sync
+      setUser(session?.user);
+      
+      if (!session?.user) {
+        setRole("PENDING");
+        setMustReset(false);
+        setAuthLoading(false);
+      }
+    });
+
+    return () => {
+      clearTimeout(timer);
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // ── AUTHORIZATION & DATA SYNC: The background path for loading profile & months ──
+  useEffect(() => {
+    if (!user) return;
+
+    const syncUserData = async () => {
       try {
-        if (!u) { setUser(null); setRole("PENDING"); setMustReset(false); return; }
-        setUser(u);
-        
         const superEmails = [
           "agritech-production@hotmail.com", 
           "ahmed.farid@agritech.com", 
@@ -113,8 +150,9 @@ export default function App() {
         let detectedRole = "PENDING";
         let profileData = null;
 
+        // 1. Fetch Profile (with race protection)
         try {
-          const profilePromise = supabase.from("profiles").select("role, force_password_reset").eq("id", u.id).maybeSingle();
+          const profilePromise = supabase.from("profiles").select("role, force_password_reset").eq("id", user.id).maybeSingle();
           const { data: profile, error: dbErr } = await Promise.race([
             profilePromise,
             new Promise((_, reject) => setTimeout(() => reject('Profile Timeout'), 5000))
@@ -128,64 +166,42 @@ export default function App() {
           console.warn("Profile fetch skipped or failed, relying on bypass list.", dbErr);
         }
 
-        // ABSOLUTE BYPASS: Email list always overrides DB role for safety
-        if (superEmails.includes(u.email?.toLowerCase().trim())) {
-          console.log("Authority Verified: Super User Bypass Active for", u.email);
+        // 2. Absolute Authority Bypass
+        if (superEmails.includes(user.email?.toLowerCase().trim())) {
           detectedRole = "SUPER_USER";
         }
-
         setRole(detectedRole);
         
-        // SUPER USER IMMUNITY: Super Users cannot be locked out by the force_reset flag
         if (profileData?.force_password_reset && detectedRole !== "SUPER_USER") {
           setMustReset(true);
         }
 
-        const cloudMonths = await getMonthsSynced(u).catch(() => null);
-        // Use localStorage for active sheet ID immediately — avoids another Supabase lock acquisition
+        // 3. Sync Months & Active Sheet
+        const cloudMonths = await getMonthsSynced(user).catch(() => []);
+        setMonths(cloudMonths);
+
         const localActive = localStorage.getItem('agritech_active_sheet');
-        const firstMonthId = (cloudMonths || [])[0]?.sheetId ?? null;
-        setMonths(cloudMonths || []);
+        const firstMonthId = cloudMonths[0]?.sheetId ?? null;
         setActiveIdState(localActive || firstMonthId);
         
-        // Sync active sheet from cloud in background (non-blocking)
-        getActiveSheetIdSynced(u).then(cloudActive => {
+        getActiveSheetIdSynced(user).then(cloudActive => {
           if (cloudActive) setActiveIdState(cloudActive);
         }).catch(() => {});
 
       } catch (err) {
-        console.error("Auth System Error:", err);
+        console.error("Data Sync Error:", err);
       } finally {
-        isCheckingUserRef.current = false;
         setAuthLoading(false);
       }
     };
 
-    const timer = setTimeout(() => { if (isLoading) setLoadingTimeout(true); }, 5000);
+    syncUserData();
+  }, [user?.id]);
 
-    // SINGULAR AUTH ENTRY: relying only on state change to avoid lock war
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log("[Auth] State Event:", event);
-      checkUser(session?.user);
-    });
-    
-    document.documentElement.setAttribute('translate', 'no');
-    document.body.setAttribute('translate', 'no');
-
-    // ── START KEEP-ALIVE + PWA SETUP ──
-    startSessionKeepAlive();
-    registerServiceWorker().then(reg => {
-      // Auto-subscribe if already granted (on reload)
-      if (reg && typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'granted') {
-        subscribeToPush(reg);
-      }
-    });
-
-    return () => {
-      clearTimeout(timer);
-      subscription.unsubscribe();
-    };
-  }, []);
+  // ── RESET change detector when the user switches months ──
+  useEffect(() => {
+    prevDataRef.current = null; // clear so we don't compare across months
+  }, [activeSheetId]);
 
   // ── CHANGE DETECTION: fire push notification when data updates ──
   useEffect(() => {
@@ -265,6 +281,7 @@ export default function App() {
     matAvailableKg:       ytdResult.data?.summary?.matAvailableKg      || 0,
     ytdLoaded:            !!ytdResult.data,
     monthCount:           (months || []).length,
+    isYTD:                activeSheetId === 'ALL'
   };
 
   const renderPage = () => {
@@ -278,12 +295,20 @@ export default function App() {
     const pageKey = `comp-${page}-${activeSheetId || 'none'}`;
     
     // Safety check: if we are switching sheets and have NO data at all, show the global loader
-    if (!data && sheetLoading && (page !== "settings" && page !== "admin" && page !== "security")) {
+    if (!data && (sheetLoading || error) && (page !== "settings" && page !== "admin" && page !== "security")) {
       return (
-        <div key="page-sync-loader" style={{ padding: 120, textAlign: 'center', color: 'var(--text3)' }}>
-          <div className="spinner" style={{ margin: '0 auto 20px' }} />
-          <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', animation: 'pulse 1.5s infinite' }}>Synchronizing {page} Page...</div>
-          <div style={{ fontSize: 10, marginTop: 10, opacity: 0.5 }}>Fetching latest economics from Google Sheets</div>
+        <div key="page-sync-loader" style={{ padding: 120, textAlign: 'center', color: error ? 'var(--danger)' : 'var(--text3)' }}>
+          {error ? (
+            <div style={{ fontSize: 40, marginBottom: 20 }}>📡</div>
+          ) : (
+            <div className="spinner" style={{ margin: '0 auto 20px' }} />
+          )}
+          <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', animation: error ? 'none' : 'pulse 1.5s infinite' }}>
+            {error ? 'Connection Error' : (loadingStage || `Synchronizing ${page} Page...`)}
+          </div>
+          <div style={{ fontSize: 10, marginTop: 10, opacity: 0.5 }}>
+            {error ? error : (loadingStage ? 'Please wait while we process the audit' : 'Fetching latest economics from Google Sheets')}
+          </div>
           <div style={{ marginTop: 30 }}>
             <button 
               onClick={() => { localStorage.clear(); window.location.reload(); }}
@@ -299,7 +324,7 @@ export default function App() {
 
     try {
       switch (page) {
-        case "dashboard":    return <Dashboard key={pageKey} data={data} role={role} monthLabel={activeMonth?.label || (isYTD ? "Full Analysis" : "")} onRefresh={refresh} newUpdates={newUpdates} clearUpdates={handleClearUpdates} globalStats={globalStats} isYTD={isYTD} />;
+        case "dashboard":    return <Dashboard key={pageKey} data={data} role={role} monthLabel={activeMonth?.label || (isYTD ? "Full Analysis" : "")} onRefresh={refresh} newUpdates={newUpdates} clearUpdates={handleClearUpdates} globalStats={globalStats} isYTD={isYTD} loadingStage={loadingStage} error={error} />;
         case "sales":        return <Sales key={pageKey} data={data} user={user} role={role} isAdmin={isAdmin} isSuper={isSuper} />;
         case "production":   return <Production key={pageKey} data={data} user={user} role={role} isAdmin={isAdmin} isSuper={isSuper} globalStats={globalStats} />;
         case "expenses":     return <Expenses key={pageKey} data={data} user={user} role={role} isAdmin={isAdmin} isSuper={isSuper} globalStats={globalStats} />;
@@ -307,7 +332,7 @@ export default function App() {
         case "materials":    return <Materials key={pageKey} data={data} user={user} role={role} isAdmin={isAdmin} isSuper={isSuper} carryForward={data?.carryForward} globalStats={globalStats} />;
         case "cashflow":     return <CashFlow key={pageKey} data={data} user={user} role={role} isAdmin={isAdmin} isSuper={isSuper} carryForward={data?.carryForward} globalStats={globalStats} />;
         case "stock":        return <StockPricing key={pageKey} data={data} user={user} role={role} isAdmin={isAdmin} isSuper={isSuper} globalStats={globalStats} />;
-        case "attendance":   return <Attendance key={pageKey} data={data} user={user} role={role} isAdmin={isAdmin} isSuper={isSuper} />;
+        case "attendance":   return <Attendance key={pageKey} data={data} user={user} role={role} isAdmin={isAdmin} isSuper={isSuper} onRefresh={refresh} />;
         case "security":     return <Security key={pageKey} user={user} />;
         case "admin":        return <AdminManagement key={pageKey} role={role} userEmail={user.email} />;
         case "settings":     return <Settings key={pageKey} role={role} months={months} activeSheetId={activeSheetId} onSwitch={switchSheet} onMonthsChange={onMonthsChange} />;
@@ -351,7 +376,7 @@ export default function App() {
       )}
 
       {/* ── PHASE 2: AUTHENTICATION ── */}
-      {!isLoading && !user && <LoginScreen key="auth-layer" />}
+      {!isLoading && !user && <LoginScreen key="auth-layer" setUser={setUser} />}
 
       {/* ── PHASE 3: SECURITY CHALLENGE ── */}
       {!isLoading && user && mustReset && (
@@ -378,14 +403,15 @@ export default function App() {
       {/* ── PHASE 5: OPERATIONAL ACCESS (THE MAIN APP) ── */}
       {!isLoading && user && !mustReset && role !== "PENDING" && (
         <div key="core-app-shell" style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
-          <aside className="sidebar">
+          <div className={`sidebar-overlay ${isSidebarOpen ? 'active' : ''}`} onClick={() => setIsSidebarOpen(false)} />
+          <aside className={`sidebar ${isSidebarOpen ? "" : "closed"}`}>
             <div className="sidebar-logo">AgriTech Pro<span>Finance</span></div>
             <div className="sidebar-scroll">
               {sections.map(section => (
                 <div className="sidebar-section" key={section} style={{ marginBottom: 20 }}>
                   <div className="sidebar-label" style={{ opacity: 0.5, fontSize: 10, fontWeight: 900, textTransform: 'uppercase', padding: '10px 20px', letterSpacing: '0.1em' }}>{section}</div>
                   {NAV.filter(n => n.section === section && userLevel >= (ROLE_LEVELS[n.minRole] || 0)).map(n => (
-                    <div key={n.id} className={`sidebar-item ${page === n.id ? "active" : ""}`} onClick={() => setPage(n.id)} style={{ padding: '10px 20px', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', transition: '0.2s' }}>
+                    <div key={n.id} className={`sidebar-item ${page === n.id ? "active" : ""}`} onClick={() => { setPage(n.id); if (window.innerWidth <= 768) setIsSidebarOpen(false); }} style={{ padding: '10px 20px', cursor: 'pointer', fontSize: 13, fontWeight: 600, display: 'flex', alignItems: 'center', transition: '0.2s' }}>
                       <span style={{ marginRight: 12, opacity: page === n.id ? 1 : 0.6 }}>{n.icon}</span> {n.label}
                     </div>
                   ))}
@@ -401,7 +427,7 @@ export default function App() {
             </div>
           </aside>
 
-          <main className="main">
+          <main className={`main ${!isSidebarOpen ? 'main-full' : ''}`}>
             {isTestMode && (
               <div style={{
                 background: 'linear-gradient(90deg, #ef4444, #f59e0b)',
@@ -418,19 +444,33 @@ export default function App() {
                 ⚠️ Testing Mode Active — Data is Isolated from Production
               </div>
             )}
-            <div key="sync-bar-container" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              {page !== "settings" && page !== "admin" && page !== "security" && (
-                <SyncBar months={months} activeSheetId={activeSheetId} onSwitch={switchSheet} lastSyncedAt={lastSyncedAt} availableCash={data?.summary?.availableCash} error={error} onRefresh={refresh} loading={sheetLoading} />
-              )}
-              <div style={{ marginLeft: 'auto', paddingRight: 12, flexShrink: 0 }}>
+            <div key="sync-bar-container" className="header-container" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 20px', background: 'var(--surface2)', borderBottom: '1px solid var(--border)', backdropFilter: 'var(--glass)', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: '300px' }}>
+                <button className="sidebar-toggle" onClick={() => setIsSidebarOpen(!isSidebarOpen)} style={{ flexShrink: 0 }}>
+                  {isSidebarOpen ? "✕" : "☰"}
+                </button>
+
+                {page !== "settings" && page !== "admin" && page !== "security" && (
+                  <div className="sync-bar-container-inner" style={{ flex: 1, minWidth: 0 }}>
+                    <SyncBar months={months} activeSheetId={activeSheetId} onSwitch={switchSheet} lastSyncedAt={lastSyncedAt} availableCash={data?.summary?.availableCash} error={error} onRefresh={refresh} loading={sheetLoading} />
+                  </div>
+                )}
+              </div>
+              
+              <div className="search-engine-wrap" style={{ minWidth: '280px', flex: '0 1 350px' }}>
+                 <SearchEngine data={ytdResult.data} onNavigate={setPage} />
+              </div>
+
+              <div className="header-actions" style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
                 <NotificationBell onPermissionGranted={() => console.log('[App] Push notification permission granted')} />
               </div>
             </div>
-            <div key={`page-wrapper-${activeSheetId || 'none'}`} style={{ width: '100%', height: '100%', flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+            <div key={`page-wrapper-${activeSheetId || 'none'}`} style={{ width: '100%', height: '100%', flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', overflowY: 'auto' }}>
               {/* Overlay loader instead of tree-replacement */}
               {sheetLoading && !data && (
-                <div style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.8)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ position: 'absolute', inset: 0, background: 'rgba(2,6,23,0.8)', zIndex: 50, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
                    <div className="spinner" />
+                   <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text3)' }}>{loadingStage || 'Syncing...'}</div>
                 </div>
               )}
               {renderPage()}

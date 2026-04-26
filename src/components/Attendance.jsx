@@ -3,6 +3,7 @@ import { formatDisplayDate, getShiftLabel } from '../lib/parseSheet';
 import { supabase, tables } from '../supabase';
 import DataEntryModal from './DataEntryModal';
 import { requestDeletion } from '../lib/audit';
+import { clearEngineCache } from '../lib/useSheetEngine';
 
 const fmtNum = (n) => Number(n || 0).toLocaleString('en-EG');
 
@@ -12,7 +13,7 @@ function normalizeWorker(name) {
   if (n.includes('gomaa'))   return 'Gomaa';
   if (n.includes('ibrahim')) return 'Ibrahim';
   if (n.includes('mahmoud')) return 'Mahmoud';
-  return name;
+  return name || 'Unknown';
 }
 
 /**
@@ -27,15 +28,23 @@ function getPerfFor(worker, teamPerformance) {
 }
 
 // Get production qty for a given attendance record from the lookup map
+function extractShift(s) {
+  const match = String(s || '').match(/\d/);
+  return match ? match[0] : '1';
+}
+
 function getProduction(rec, prodMap) {
   if (!prodMap) return 0;
   const workerKey = normalizeWorker(rec.worker).toLowerCase();
-  return prodMap[`${rec.date}|${workerKey}`] || 0;
+  const shiftKey = extractShift(rec.shift);
+  return prodMap[`${rec.date}|${workerKey}|${shiftKey}`] || 0;
 }
 
-export default function Attendance({ data, user, role, isAdmin, isSuper }) {
+export default function Attendance({ data, user, role, isAdmin, isSuper, onRefresh }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [saveError, setSaveError] = useState('');
   const [newShift, setNewShift] = useState({
     date: new Date().toISOString().split('T')[0],
     worker: 'Gomaa',
@@ -43,11 +52,15 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
     present: true,
     bags: '',
     checkIn: '08:00 AM',
-    checkOut: '04:00 PM'
+    checkOut: '04:00 PM',
+    advance: '',
+    penalty: '',
+    financial_note: ''
   });
 
   const handleSave = async () => {
     setIsSaving(true);
+    setSaveError('');
     const isTest = localStorage.getItem('finance_pro_test_mode') === 'true';
     try {
       // 1. Log Attendance
@@ -59,7 +72,10 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
           status: newShift.present ? 'PRESENT' : 'ABSENT',
           check_in: newShift.present ? newShift.checkIn : null,
           check_out: newShift.present ? newShift.checkOut : null,
-          is_dev_test: isTest
+          is_dev_test: isTest,
+          advance: parseFloat(newShift.advance) || 0,
+          penalty: parseFloat(newShift.penalty) || 0,
+          financial_note: newShift.financial_note || null
         }
       ]);
       if (attErr) throw attErr;
@@ -79,9 +95,14 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
       }
 
       setIsModalOpen(false);
-      window.location.reload();
+      clearEngineCache();
+      if (onRefresh) {
+        onRefresh();
+      } else {
+        window.location.reload();
+      }
     } catch (e) {
-      alert("Error: " + e.message);
+      setSaveError(e.message);
     } finally {
       setIsSaving(false);
     }
@@ -90,15 +111,34 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
   const handleDelete = async (item) => {
     if (!isAdmin) return;
     if (!item.id) return alert("Historical data from Google Sheets cannot be deleted via the app.");
-    
-    if (!window.confirm("Are you sure you want to request deletion for this attendance record? This will require approval from a Super User.")) return;
-    
+    setConfirmDeleteId(item.id);
+  };
+
+  const handleConfirmDelete = async (item) => {
+    setConfirmDeleteId(null);
     try {
       const { error } = await requestDeletion('attendance', item.id, user.email);
       if (error) throw error;
       window.location.reload();
     } catch (e) {
       alert("Delete Request Failed: " + e.message);
+    }
+  };
+
+  const handleToggleMercy = async (id, currentIsForgiven) => {
+    if (!isAdmin) return;
+    try {
+      const { error } = await supabase
+        .from('attendance')
+        .update({ is_penalty_forgiven: !currentIsForgiven })
+        .eq('id', id);
+      
+      if (error) throw error;
+      clearEngineCache();
+      if (onRefresh) onRefresh();
+      else window.location.reload();
+    } catch (e) {
+      alert("Mercy Action Failed: " + e.message);
     }
   };
 
@@ -115,18 +155,6 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
     return `${h}:${m[2]}${ampm}`.trim();
   };
 
-  if (attendance.length === 0) {
-    return (
-      <div style={{ padding: 60, textAlign: 'center', color: 'var(--text3)' }}>
-        <div style={{ fontSize: 48, marginBottom: 16 }}>📋</div>
-        <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>No Attendance Records</div>
-        <div style={{ fontSize: 13 }}>
-          The AttendanceSheet tab was found but returned no data for the selected month.
-        </div>
-      </div>
-    );
-  }
-
   // ── Worker summary aggregation ──
   const WORKERS = ['Gomaa', 'Ibrahim', 'Mahmoud'];
   const SHIFT_COLOR = { 'Gomaa': '#3b82f6', 'Ibrahim': '#10b981', 'Mahmoud': '#8b5cf6' };
@@ -136,7 +164,7 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
     const perf = getPerfFor(w, teamPerf);
     workerStats[w] = {
       days: 0, hoursWorked: 0, production: 0,
-      salary:         perf?.salary      || 0,
+      salary:         perf?.salary || perf?.outstanding || 0,
       totalSalary:    perf?.totalSalary  || 0,
       inAdvance:      perf?.inAdvance    || 0,
       deduction:      perf?.deduction    || 0,
@@ -180,11 +208,33 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
               <strong style={{ color: 'var(--accent)' }}>{fmtNum(grandTotalProd)} bags</strong> total
             </div>
           </div>
-          <button className="btn btn-primary" onClick={() => setIsModalOpen(true)}>
-            <span>+</span> Log Shift
+          <button className="btn btn-primary" onClick={() => setIsModalOpen(true)} style={{ padding: '12px 24px', fontWeight: 900, boxShadow: '0 0 20px rgba(59,130,246,0.3)' }}>
+            <span>+</span> Log Shift Entry
           </button>
         </div>
       </div>
+
+      {/* NEW: Cloud-Native Notice & Immediate Action for May 2026 */}
+      {data?.month === 4 && data?.year === 2026 && (
+        <div className="card" style={{ 
+          marginBottom: 28, 
+          padding: '24px 32px', 
+          background: 'linear-gradient(90deg, rgba(59,130,246,0.1), transparent)', 
+          border: '1px solid rgba(59,130,246,0.2)',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          borderRadius: 20
+        }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16, color: 'white', marginBottom: 4 }}>☁️ May 2026 - Cloud Mode Enabled</div>
+            <div style={{ fontSize: 12, color: 'var(--text3)' }}>This month records directly to Supabase. Google Sheets are bypassed.</div>
+          </div>
+          <button className="btn btn-primary" onClick={() => setIsModalOpen(true)} style={{ background: '#3b82f6', color: 'white', padding: '10px 24px' }}>
+             + Add New Attendance Entry
+          </button>
+        </div>
+      )}
 
       {/* Worker Summary Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 20, marginBottom: 28 }}>
@@ -273,18 +323,29 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
                           Deductions
                         </div>
                         {stats.deductionItems.map((item, idx) => (
-                          <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 0', gap: 6 }}>
+                          <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '2px 0', gap: 6, opacity: item.isForgiven ? 0.6 : 1 }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                              {isAdmin && (
+                                <button 
+                                  onClick={() => handleToggleMercy(item.id, item.isForgiven)}
+                                  className="btn-icon" 
+                                  title={item.isForgiven ? "Un-forgive" : "Grant Mercy ❤️"}
+                                  style={{ padding: 4, height: 'auto', color: item.isForgiven ? '#10b981' : 'var(--text3)' }}
+                                >
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill={item.isForgiven ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2.5"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" /></svg>
+                                </button>
+                              )}
                               <span style={{ fontSize: 9, color: 'var(--text3)', fontFamily: 'var(--mono)', whiteSpace: 'nowrap' }}>
                                 {item.date ? new Date(item.date).toLocaleDateString('en-GB', { day:'2-digit', month:'short' }) : ''}
                               </span>
                               {item.reason && (
-                                <span style={{ fontSize: 10, color: '#ef4444', opacity: 0.9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>
+                                <span style={{ fontSize: 10, color: item.isForgiven ? '#10b981' : '#ef4444', textDecoration: item.isForgiven ? 'line-through' : 'none', opacity: 0.9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>
                                   {item.reason}
                                 </span>
                               )}
+                              {item.isForgiven && <span style={{ fontSize: 8, color: '#10b981', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Mercy ❤️</span>}
                             </div>
-                            <span style={{ fontSize: 11, fontWeight: 700, color: '#ef4444', fontFamily: 'var(--mono)', whiteSpace: 'nowrap' }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: item.isForgiven ? '#10b981' : '#ef4444', textDecoration: item.isForgiven ? 'line-through' : 'none', fontFamily: 'var(--mono)', whiteSpace: 'nowrap' }}>
                               -{fmtNum(item.amount)}
                             </span>
                           </div>
@@ -326,101 +387,122 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
           <div style={{ fontSize: 11, color: 'var(--text3)' }}>{sorted.length} entries</div>
         </div>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                {['Date','Worker','Shift','Status','Clock In','Clock Out','Hours','Production'].map(h => (
-                  <th key={h} style={{
-                    textAlign: h === 'Production' || h === 'Hours' ? 'center' : 'left',
-                    padding: '12px 16px', fontSize: 10, textTransform: 'uppercase',
-                    letterSpacing: '0.1em', color: 'var(--text3)',
-                    borderBottom: '1px solid var(--border)', fontWeight: 700
-                  }}>{h}</th>
-                ))}
-                {isAdmin && <th style={{ textAlign: 'right', padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>Actions</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((rec, i) => {
-                const workerName = normalizeWorker(rec.worker);
-                const color      = SHIFT_COLOR[workerName] || 'var(--accent)';
-                const bags       = getProduction(rec, shiftProdMap);
-                return (
-                  <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ padding: '13px 16px', fontSize: 13, fontWeight: 600 }}>
-                      {formatDisplayDate(rec.date)}
-                    </td>
-                    <td style={{ padding: '13px 16px' }}>
-                      <span style={{ fontWeight: 700, color }}>{workerName}</span>
-                    </td>
-                    <td style={{ padding: '13px 16px', fontSize: 11, color: 'var(--text3)' }}>
-                      {getShiftLabel(rec.shift)}
-                    </td>
-                    <td style={{ padding: '13px 16px' }}>
-                      <span style={{
-                        fontSize: 10, fontWeight: 800, textTransform: 'uppercase',
-                        color: rec.present ? '#10b981' : '#ef4444',
-                        background: rec.present ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
-                        padding: '3px 8px', borderRadius: 4
-                      }}>{rec.present ? 'Present' : 'Absent'}</span>
-                    </td>
-                    <td style={{ padding: '13px 16px', fontFamily: 'var(--mono)', fontSize: 12, color: rec.present ? 'var(--accent2)' : 'var(--text3)' }}>
-                      {formatTime(rec.checkIn)}
-                    </td>
-                    <td style={{ padding: '13px 16px', fontFamily: 'var(--mono)', fontSize: 12, color: rec.present ? 'var(--danger)' : 'var(--text3)' }}>
-                      {formatTime(rec.checkOut)}
-                    </td>
-                    <td style={{ padding: '13px 16px', fontWeight: 700, textAlign: 'center', fontFamily: 'var(--mono)' }}>
-                      {rec.hoursWorked > 0 ? rec.hoursWorked.toFixed(1) : '—'}
-                    </td>
-                    {/* ── Production column ── */}
-                    <td style={{ padding: '13px 16px', textAlign: 'center' }}>
-                      {bags > 0 ? (
+          {sorted.length === 0 ? (
+            <div style={{ padding: '80px 40px', textAlign: 'center', background: 'rgba(255,255,255,0.01)', borderRadius: '0 0 24px 24px' }}>
+              <div style={{ fontSize: 64, marginBottom: 20 }}>📋</div>
+              <h3 style={{ color: 'white', marginBottom: 8, fontSize: 18 }}>No Attendance Records Found</h3>
+              <p style={{ color: 'var(--text3)', fontSize: 13, maxWidth: 400, margin: '0 auto 24px', lineHeight: 1.6 }}>
+                The attendance log for this month is currently empty. You can start logging worker shifts and production directly using the button above.
+              </p>
+              <button 
+                className="btn btn-primary" 
+                onClick={() => setIsModalOpen(true)}
+                style={{ padding: '10px 24px', borderRadius: 10, fontSize: 13, fontWeight: 700 }}
+              >
+                + Log First Shift
+              </button>
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  {['Date','Worker','Shift','Status','Clock In','Clock Out','Hours','Production'].map(h => (
+                    <th key={h} style={{
+                      textAlign: h === 'Production' || h === 'Hours' ? 'center' : 'left',
+                      padding: '12px 16px', fontSize: 10, textTransform: 'uppercase',
+                      letterSpacing: '0.1em', color: 'var(--text3)',
+                      borderBottom: '1px solid var(--border)', fontWeight: 700
+                    }}>{h}</th>
+                  ))}
+                  {isAdmin && <th style={{ textAlign: 'right', padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((rec, i) => {
+                  const workerName = normalizeWorker(rec.worker);
+                  const color      = SHIFT_COLOR[workerName] || 'var(--accent)';
+                  const bags       = getProduction(rec, shiftProdMap);
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                      <td style={{ padding: '13px 16px', fontSize: 13, fontWeight: 600 }}>
+                        {formatDisplayDate(rec.date)}
+                      </td>
+                      <td style={{ padding: '13px 16px' }}>
+                        <span style={{ fontWeight: 700, color }}>{workerName}</span>
+                      </td>
+                      <td style={{ padding: '13px 16px', fontSize: 11, color: 'var(--text3)' }}>
+                        {getShiftLabel(rec.shift)}
+                      </td>
+                      <td style={{ padding: '13px 16px' }}>
                         <span style={{
-                          display: 'inline-flex', alignItems: 'center', gap: 4,
-                          fontWeight: 800, fontSize: 13, color: '#f59e0b', fontFamily: 'var(--mono)',
-                          background: 'rgba(245,158,11,0.09)', padding: '3px 10px', borderRadius: 6
-                        }}>
-                          📦 {bags}
-                        </span>
-                      ) : (
-                        <span style={{ color: 'var(--text3)', fontSize: 12 }}>—</span>
-                      )}
-                    </td>
-                    {isAdmin && (
-                      <td style={{ padding: '13px 16px', textAlign: 'right' }}>
-                        {rec.id ? (
-                          !rec.is_delete_pending ? (
-                            <button 
-                              onClick={() => handleDelete(rec)} 
-                              style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', opacity: 0.6 }}
-                              title="Request Deletion"
-                            >
-                              🗑️
-                            </button>
-                          ) : (
-                            <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 700 }}>PENDING</span>
-                          )
+                          fontSize: 10, fontWeight: 800, textTransform: 'uppercase',
+                          color: rec.present ? '#10b981' : '#ef4444',
+                          background: rec.present ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+                          padding: '3px 8px', borderRadius: 4
+                        }}>{rec.present ? 'Present' : 'Absent'}</span>
+                      </td>
+                      <td style={{ padding: '13px 16px', fontFamily: 'var(--mono)', fontSize: 12, color: rec.present ? 'var(--accent2)' : 'var(--text3)' }}>
+                        {formatTime(rec.checkIn)}
+                      </td>
+                      <td style={{ padding: '13px 16px', fontFamily: 'var(--mono)', fontSize: 12, color: rec.present ? 'var(--danger)' : 'var(--text3)' }}>
+                        {formatTime(rec.checkOut)}
+                      </td>
+                      <td style={{ padding: '13px 16px', fontWeight: 700, textAlign: 'center', fontFamily: 'var(--mono)' }}>
+                        {rec.hoursWorked > 0 ? rec.hoursWorked.toFixed(1) : '—'}
+                      </td>
+                      <td style={{ padding: '13px 16px', textAlign: 'center' }}>
+                        {bags > 0 ? (
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            fontWeight: 800, fontSize: 13, color: '#f59e0b', fontFamily: 'var(--mono)',
+                            background: 'rgba(245,158,11,0.09)', padding: '3px 10px', borderRadius: 6
+                          }}>
+                            📦 {bags}
+                          </span>
                         ) : (
-                          <span style={{ fontSize: 9, color: 'var(--text3)' }}>—</span>
+                          <span style={{ color: 'var(--text3)', fontSize: 12 }}>—</span>
                         )}
                       </td>
-                    )}
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr style={{ background: 'rgba(255,255,255,0.02)' }}>
-                <td colSpan={7} style={{ padding: '14px 16px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text3)' }}>
-                  Total Bags Produced
-                </td>
-                <td style={{ padding: '14px 16px', textAlign: 'center', fontWeight: 900, fontSize: 15, color: '#f59e0b', fontFamily: 'var(--mono)' }}>
-                  📦 {fmtNum(grandTotalProd)}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
+                      {isAdmin && (
+                        <td style={{ padding: '13px 16px', textAlign: 'right' }}>
+                          {rec.id ? (
+                            rec.is_delete_pending ? (
+                              <span style={{ fontSize: 9, color: '#f59e0b', fontWeight: 700 }}>PENDING</span>
+                            ) : confirmDeleteId === rec.id ? (
+                              <div style={{ display: 'flex', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>
+                                <button className="btn" style={{ padding: '2px 8px', fontSize: 9, background: 'var(--danger)', border: 'none' }} onClick={() => handleConfirmDelete(rec)}>Delete</button>
+                                <button className="btn" style={{ padding: '2px 8px', fontSize: 9 }} onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                              </div>
+                            ) : (
+                              <button 
+                                onClick={() => handleDelete(rec)} 
+                                style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', opacity: 0.6 }}
+                                title="Request Deletion"
+                              >
+                                🗑️
+                              </button>
+                            )
+                          ) : (
+                            <span style={{ fontSize: 9, color: 'var(--text3)' }}>—</span>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: 'rgba(255,255,255,0.02)' }}>
+                  <td colSpan={7} style={{ padding: '14px 16px', textAlign: 'right', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--text3)' }}>
+                    Total Bags Produced
+                  </td>
+                  <td style={{ padding: '14px 16px', textAlign: 'center', fontWeight: 900, fontSize: 15, color: '#f59e0b', fontFamily: 'var(--mono)' }}>
+                    📦 {fmtNum(grandTotalProd)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
         </div>
       </div>
 
@@ -431,6 +513,11 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
         onSave={handleSave}
         loading={isSaving}
       >
+        {saveError && (
+          <div style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', padding: '10px 14px', borderRadius: 8, fontSize: 11, fontWeight: 700, marginBottom: 16, border: '1px solid rgba(239,68,68,0.2)' }}>
+            Error: {saveError}
+          </div>
+        )}
         <div className="field">
           <label>Date</label>
           <input type="date" value={newShift.date} onChange={e => setNewShift({...newShift, date: e.target.value})} />
@@ -458,6 +545,27 @@ export default function Attendance({ data, user, role, isAdmin, isSuper }) {
             <option value="false">Absent</option>
           </select>
         </div>
+
+        <div style={{ padding: '16px', background: 'rgba(255,255,255,0.03)', borderRadius: 12, margin: '8px 0', border: '1px solid rgba(255,255,255,0.05)' }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text3)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6, textTransform: 'uppercase' }}>
+            💰 Financials (Advances & Penalties)
+          </div>
+          <div className="grid-2">
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Advance (Salfa)</label>
+              <input type="number" placeholder="0" value={newShift.advance} onChange={e => setNewShift({...newShift, advance: e.target.value})} />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Penalty (Deduction)</label>
+              <input type="number" placeholder="0" value={newShift.penalty} onChange={e => setNewShift({...newShift, penalty: e.target.value})} />
+            </div>
+          </div>
+          <div className="field" style={{ marginTop: 12, marginBottom: 0 }}>
+            <label>Financial Note (Reason)</label>
+            <input type="text" placeholder="e.g. School fees Salfa" value={newShift.financial_note} onChange={e => setNewShift({...newShift, financial_note: e.target.value})} />
+          </div>
+        </div>
+
         {newShift.present && (
           <>
             <div className="field">

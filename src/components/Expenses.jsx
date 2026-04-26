@@ -3,9 +3,10 @@ import { formatDisplayDate } from '../lib/parseSheet';
 import { supabase, tables } from '../supabase';
 import DataEntryModal from './DataEntryModal';
 import { requestDeletion } from '../lib/audit';
+import { clearEngineCache } from '../lib/useSheetEngine';
 
-const fmt    = (n)      => Number(n || 0).toLocaleString('en-US');
-const fmtDec = (n, d=2) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+const fmtDec = (n, d = 2) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
 // Categories counted as "fixed" costs
 const FIXED_CATEGORIES = ['rent', 'salary', 'salaries', 'fixed', 'monthly', 'insurance', 'loan', 'depreciation'];
@@ -16,13 +17,14 @@ function isFixed(category) {
 }
 
 // Canonical worker keys and display labels
-const WORKER_KEYS   = ['gomaa', 'ibrahim', 'mahmoud'];
+const WORKER_KEYS = ['gomaa', 'ibrahim', 'mahmoud'];
 const WORKER_LABELS = { gomaa: 'Gomaa', ibrahim: 'Ibrahim', mahmoud: 'Mahmoud' };
 
 function Expenses({ data, globalStats = {}, user, role, isAdmin, isSuper }) {
   const [filter, setFilter] = useState('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   const [newExp, setNewExp] = useState({
     date: new Date().toISOString().split('T')[0],
     category: 'Maintenance',
@@ -56,15 +58,16 @@ function Expenses({ data, globalStats = {}, user, role, isAdmin, isSuper }) {
     const isTest = localStorage.getItem('finance_pro_test_mode') === 'true';
     try {
       const { error } = await supabase.from(tables.EXPENSES).insert([
-        { 
-          date: newExp.date, 
-          category: newExp.category, 
-          amount: parseFloat(newExp.amount), 
+        {
+          date: newExp.date,
+          category: newExp.category,
+          amount: parseFloat(newExp.amount),
           description: newExp.description,
           is_dev_test: isTest
         }
       ]);
       if (error) throw error;
+      clearEngineCache();
       setIsModalOpen(false);
       setNewExp({ date: new Date().toISOString().split('T')[0], category: 'Maintenance', amount: '', description: '' });
       window.location.reload(); // Refresh to show merge
@@ -78,13 +81,16 @@ function Expenses({ data, globalStats = {}, user, role, isAdmin, isSuper }) {
   const handleDelete = async (item) => {
     if (!isAdmin) return;
     if (item._isSalary) return alert("Salaries cannot be deleted from here. They are calculated automatically.");
-    
-    if (!window.confirm("Are you sure you want to request deletion for this expense? This will require approval from a Super User.")) return;
-    
+    setConfirmDeleteId(item.id);
+  };
+
+  const handleConfirmDelete = async (item) => {
+    setConfirmDeleteId(null);
     setIsSaving(true);
     try {
       const { error } = await requestDeletion(tables.EXPENSES, item.id, user.email);
       if (error) throw error;
+      clearEngineCache();
       window.location.reload();
     } catch (e) {
       alert("Delete Request Failed: " + e.message);
@@ -107,13 +113,13 @@ function Expenses({ data, globalStats = {}, user, role, isAdmin, isSuper }) {
       const amount = perf.salary || perf.outstanding || 0;
       if (amount <= 0) return null;
       return {
-        date:       null,
-        category:   'Salaries',
+        date: null,
+        category: 'Salaries',
         description: `${WORKER_LABELS[key]} — ${perf.status || ''}`,
         amount,
-        _isSalary:  true,
-        _worker:    WORKER_LABELS[key],
-        _status:    perf.status,
+        _isSalary: true,
+        _worker: WORKER_LABELS[key],
+        _status: perf.status,
       };
     })
     .filter(Boolean);
@@ -121,23 +127,23 @@ function Expenses({ data, globalStats = {}, user, role, isAdmin, isSuper }) {
   const totalSalaries = salaryEntries.reduce((s, e) => s + e.amount, 0);
 
   // Salaries come first, then ledger expenses
-  const allExpenses      = [...salaryEntries, ...expenses];
-  const fixedExpenses    = allExpenses.filter(e =>  isFixed(e.category));
+  const allExpenses = [...salaryEntries, ...expenses];
+  const fixedExpenses = allExpenses.filter(e => isFixed(e.category));
   const variableExpenses = allExpenses.filter(e => !isFixed(e.category));
 
-  const totalFixed    = fixedExpenses.reduce((s, e)    => s + (e.amount || 0), 0);
+  const totalFixed = fixedExpenses.reduce((s, e) => s + (e.amount || 0), 0);
   const totalVariable = variableExpenses.reduce((s, e) => s + (e.amount || 0), 0);
-  const totalExp      = totalFixed + totalVariable;
+  const totalExp = totalFixed + totalVariable;
 
-  const fixedCostPerTon    = totalProducedTons > 0 ? totalFixed    / totalProducedTons : 0;
+  const fixedCostPerTon = totalProducedTons > 0 ? totalFixed / totalProducedTons : 0;
   const variableCostPerTon = totalProducedTons > 0 ? totalVariable / totalProducedTons : 0;
-  const totalCostPerTon    = totalProducedTons > 0 ? totalExp      / totalProducedTons : 0;
+  const totalCostPerTon = totalProducedTons > 0 ? totalExp / totalProducedTons : 0;
 
   // YTD comparison (all months combined) to provide context for low-production months
-  const ytdTotalProduced    = globalStats.totalProduced  || 0;  // tons
-  const ytdTotalCosts       = globalStats.totalCosts     || 0;  // already includes all months' expenses
-  const ytdCostPerTon       = ytdTotalProduced > 0 ? ytdTotalCosts / ytdTotalProduced : 0;
-  const isLowProduction     = totalProducedTons > 0 && totalProducedTons < 1.0;  // < 1 ton = inflated per-ton
+  const ytdTotalProduced = globalStats.totalProduced || 0;  // tons
+  const ytdTotalCosts = globalStats.totalCosts || 0;  // already includes all months' expenses
+  const ytdCostPerTon = ytdTotalProduced > 0 ? ytdTotalCosts / ytdTotalProduced : 0;
+  const isLowProduction = totalProducedTons > 0 && totalProducedTons < 1.0;  // < 1 ton = inflated per-ton
 
   // Category breakdown
   const displayedExpenses = filter === 'fixed' ? fixedExpenses
@@ -374,7 +380,7 @@ function Expenses({ data, globalStats = {}, user, role, isAdmin, isSuper }) {
                         <span style={{
                           display: 'inline-block', padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700,
                           background: isSal ? 'rgba(139,92,246,0.15)' : isFixed(r.category) ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.12)',
-                          color:      isSal ? '#8b5cf6'               : isFixed(r.category) ? '#f59e0b'               : 'var(--accent)',
+                          color: isSal ? '#8b5cf6' : isFixed(r.category) ? '#f59e0b' : 'var(--accent)',
                         }}>
                           {r.category}{isSal ? ' 💼' : isFixed(r.category) ? ' 🏛' : ''}
                         </span>
@@ -384,7 +390,7 @@ function Expenses({ data, globalStats = {}, user, role, isAdmin, isSuper }) {
                         {isSal && r._status && (
                           <span style={{
                             marginLeft: 8, fontSize: 9, fontWeight: 900, textTransform: 'uppercase',
-                            color:      r._status.toLowerCase() === 'paid' ? '#10b981' : '#ef4444',
+                            color: r._status.toLowerCase() === 'paid' ? '#10b981' : '#ef4444',
                             background: r._status.toLowerCase() === 'paid' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)',
                             padding: '2px 6px', borderRadius: 4
                           }}>{r._status}</span>
@@ -397,16 +403,21 @@ function Expenses({ data, globalStats = {}, user, role, isAdmin, isSuper }) {
                       </td>
                       {isAdmin && (
                         <td className="px-3 text-end">
-                          {isSal ? null : !r.is_delete_pending ? (
-                            <button 
-                              onClick={() => handleDelete(r)} 
+                          {isSal ? null : r.is_delete_pending ? (
+                            <span title="Waiting for Super User approval" style={{ fontSize: 9, color: '#f59e0b', fontWeight: 700 }}>PENDING</span>
+                          ) : confirmDeleteId === r.id ? (
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>
+                              <button className="btn" style={{ padding: '2px 8px', fontSize: 9, background: 'var(--danger)', border: 'none' }} onClick={() => handleConfirmDelete(r)}>Delete</button>
+                              <button className="btn" style={{ padding: '2px 8px', fontSize: 9 }} onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => handleDelete(r)}
                               style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', opacity: 0.6 }}
                               title="Request Deletion"
                             >
                               🗑️
                             </button>
-                          ) : (
-                            <span title="Waiting for Super User approval" style={{ fontSize: 9, color: '#f59e0b', fontWeight: 700 }}>PENDING</span>
                           )}
                         </td>
                       )}
@@ -436,30 +447,30 @@ function Expenses({ data, globalStats = {}, user, role, isAdmin, isSuper }) {
         </div>
       </div>
 
-      <DataEntryModal 
-        title="Add New Expense" 
-        isOpen={isModalOpen} 
-        onClose={() => setIsModalOpen(false)} 
+      <DataEntryModal
+        title="Add New Expense"
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
         onSave={handleSave}
         loading={isSaving}
       >
         <div className="field">
           <label>Date</label>
-          <input type="date" value={newExp.date} onChange={e => setNewExp({...newExp, date: e.target.value})} />
+          <input type="date" value={newExp.date} onChange={e => setNewExp({ ...newExp, date: e.target.value })} />
         </div>
         <div className="field">
           <label>Category</label>
-          <select value={newExp.category} onChange={e => setNewExp({...newExp, category: e.target.value})}>
+          <select value={newExp.category} onChange={e => setNewExp({ ...newExp, category: e.target.value })}>
             {EXPENSE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
         <div className="field">
           <label>Amount (EGP)</label>
-          <input type="number" placeholder="0.00" value={newExp.amount} onChange={e => setNewExp({...newExp, amount: e.target.value})} />
+          <input type="number" placeholder="0.00" value={newExp.amount} onChange={e => setNewExp({ ...newExp, amount: e.target.value })} />
         </div>
         <div className="field">
           <label>Description (Optional)</label>
-          <textarea placeholder="Add details..." value={newExp.description} onChange={e => setNewExp({...newExp, description: e.target.value})} />
+          <textarea placeholder="Add details..." value={newExp.description} onChange={e => setNewExp({ ...newExp, description: e.target.value })} />
         </div>
       </DataEntryModal>
     </div>

@@ -7,19 +7,26 @@ const STORAGE_KEY = 'agritech_month_registry';
 const ACTIVE_KEY  = 'agritech_active_sheet';
 const SYNC_URL_KEY = 'agritech_sync_url';
 
+// Any month >= May 2026 is cloud-native by default
+export const CLOUD_CUTOFF = { month: 4, year: 2026 }; 
+
+export function isFutureMonth(m, y) {
+  return (parseInt(y) > CLOUD_CUTOFF.year) || (parseInt(y) === CLOUD_CUTOFF.year && parseInt(m) >= CLOUD_CUTOFF.month);
+}
+
 // ── HARDCODED DEFAULTS — always available on every device, cannot be lost ──
 const HARDCODED_MONTHS = [
   {
     sheetId: '1qsM50OxtDNqDeWBxKKHHNRWBJwkXwuNQzsTJEGrMsCY',
     label:   'March 2026',
-    month:   3,
+    month:   2,
     year:    2026,
     addedAt: 0
   },
   {
     sheetId: '11Tf5W3euky4Z_1svgWUOuiRDOYl3YKEv95oM6fwuGkg',
     label:   'April 2026',
-    month:   4,
+    month:   3,
     year:    2026,
     addedAt: 1
   },
@@ -83,9 +90,7 @@ export function getMonthsSynced(userObject = null) {
     // ── SMART MERGE: Hardcoded defaults → localStorage → Cloud ──
     // Hardcoded months form an immovable baseline that can never be lost
     const mergedMap = new Map();
-    HARDCODED_MONTHS.forEach(m => mergedMap.set(`${m.year}-${m.month}`, m));
     localMonths.forEach(m => mergedMap.set(`${m.year}-${m.month}`, m));
-
     if (Array.isArray(result) && result.length > 0) {
       const cloudMapped = result.map(d => ({
         sheetId: d.sheet_id,
@@ -96,6 +101,8 @@ export function getMonthsSynced(userObject = null) {
       }));
       cloudMapped.forEach(m => mergedMap.set(`${m.year}-${m.month}`, m));
     }
+    // Hardcoded months MUST win to ensure the cloud-transition fixes are enforced
+    HARDCODED_MONTHS.forEach(m => mergedMap.set(`${m.year}-${m.month}`, m));
 
     const finalMonths = Array.from(mergedMap.values())
       .sort((a, b) => (a.year * 12 + a.month) - (b.year * 12 + b.month));
@@ -117,9 +124,15 @@ export async function addMonthSynced({ sheetId, label, month, year }, userObject
     }
     if (!user) return;
 
+    // Auto-generate SUPA ID for future months if blank
+    let finalId = sheetId;
+    if ((!finalId || finalId.trim() === '') && isFutureMonth(month, year)) {
+      finalId = `SUPA_${year}_${month}`;
+    }
+
     const { error } = await supabase.from('sheet_configs').insert([{
       owner_id: user.id,
-      sheet_id: sheetId,
+      sheet_id: finalId,
       label,
       month:   parseInt(month),
       year:    parseInt(year),
@@ -134,9 +147,15 @@ export async function addMonthSynced({ sheetId, label, month, year }, userObject
   // Remove existing entry for exactly this month/year so we can update it cleanly if they replace a month
   const filtered = months.filter(m => !(m.year === parseInt(year) && m.month === parseInt(month)));
   
+  // Auto-generate SUPA ID for local fallback as well
+  let finalId = sheetId;
+  if ((!finalId || finalId.trim() === '') && isFutureMonth(month, year)) {
+    finalId = `SUPA_${year}_${month}`;
+  }
+
   const updated = [
     ...filtered,
-    { sheetId, label, month: parseInt(month), year: parseInt(year), addedAt: Date.now() }
+    { sheetId: finalId, label, month: parseInt(month), year: parseInt(year), addedAt: Date.now() }
   ].sort((a, b) => (a.year * 12 + a.month) - (b.year * 12 + b.month));
   
   localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));

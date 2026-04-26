@@ -2,13 +2,14 @@ import React, { useState } from 'react';
 import { 
   addMonthSynced, 
   removeMonthSynced, 
-  extractSheetId,
   extractGid,
   getSyncUrl,
-  setSyncUrl
+  setSyncUrl,
+  isFutureMonth
 } from '../lib/monthRegistry';
 import { syncAllToSheets } from '../lib/syncEngine';
 import { supabase } from '../supabase';
+import { clearEngineCache } from '../lib/useSheetEngine';
 
 const MONTH_NAMES = ['January','February','March','April','May','June',
                      'July','August','September','October','November','December'];
@@ -35,18 +36,22 @@ function Settings({ role, months = [], activeSheetId, onSwitch, onMonthsChange }
   }
 
   const handleAdd = async () => {
-    const sheetId = extractSheetId(input);
-    const gidFromUrl = extractGid(input);
+    // Determine ID early
+    const isCloudOnly = !input || input.trim() === '';
+    const sheetId = isCloudOnly ? `SUPA_${year}_${month}` : extractSheetId(input);
+    const gidFromUrl = isCloudOnly ? null : extractGid(input);
 
-    if (!sheetId || sheetId.length < 20) { setTestMsg('❌ Invalid Sheet URL or ID'); return; }
+    if (!isCloudOnly && (!sheetId || sheetId.length < 20)) { setTestMsg('❌ Invalid Sheet URL or ID'); return; }
     if (!label.trim()) { setTestMsg('❌ Please enter a label (e.g. March 2026)'); return; }
 
     setAdding(true);
-    setTestMsg('⏳ Testing connection...');
 
-    // Try several known GIDs + the one from the URL — succeed on the first valid CSV response
-    const testGids = [...new Set([gidFromUrl, '2126333699', '1425731211', '512991814', ''])].filter(g => g !== null);
-    let reachable = false;
+    let reachable = true; // Assume true for Cloud-Only
+    if (!isCloudOnly) {
+      setTestMsg('⏳ Testing connection...');
+      // Try several known GIDs + the one from the URL — succeed on the first valid CSV response
+      const testGids = [...new Set([gidFromUrl, '2126333699', '1425731211', '512991814', ''])].filter(g => g !== null);
+      reachable = false;
 
     for (const gid of testGids) {
       try {
@@ -68,6 +73,7 @@ function Settings({ role, months = [], activeSheetId, onSwitch, onMonthsChange }
       } catch (err) { 
         console.warn(`Connection test failed for GID ${gid}:`, err.message);
       }
+      } // end for loop
     }
 
     if (!reachable) {
@@ -85,6 +91,7 @@ function Settings({ role, months = [], activeSheetId, onSwitch, onMonthsChange }
         year: parseInt(year) 
       });
       
+      clearEngineCache();
       onMonthsChange(updated || []);
       onSwitch(sheetId);
 
@@ -132,6 +139,7 @@ function Settings({ role, months = [], activeSheetId, onSwitch, onMonthsChange }
   };
 
   const handleRemove = async (sheetId) => {
+    clearEngineCache();
     const updated = await removeMonthSynced(sheetId);
     onMonthsChange(updated);
   };
@@ -293,14 +301,26 @@ function Settings({ role, months = [], activeSheetId, onSwitch, onMonthsChange }
           </div>
 
           <div style={{ marginBottom: 12 }}>
-            <label style={{ fontSize: 11, color: 'var(--text3)', display: 'block', marginBottom: 6, fontWeight: 600 }}>GOOGLE SHEET URL OR ID</label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <label style={{ fontSize: 11, color: 'var(--text3)', fontWeight: 600, textTransform: 'uppercase' }}>
+                GOOGLE SHEET URL
+              </label>
+              {isFutureMonth(month, year) && (
+                <span style={{ fontSize: 10, color: 'var(--accent2)', fontWeight: 800 }}>☁️ RECOMENDED: MODERN CLOUD MODE</span>
+              )}
+            </div>
             <input
               className="form-control"
-              placeholder="https://docs.google.com/spreadsheets/d/.../edit"
+              placeholder={isFutureMonth(month, year) ? "No URL needed for future months (Cloud-First)..." : "Required for legacy months (https://docs.google.com/...)"}
               value={input}
               onChange={e => setInput(e.target.value)}
-              style={{ borderRadius: 8, padding: '10px 14px', background: 'var(--bg2)', border: '1px solid var(--border)' }}
+              style={{ borderRadius: 8, padding: '10px 14px', background: 'var(--bg2)', border: isFutureMonth(month, year) ? '1px solid var(--accent2)' : '1px solid var(--border)' }}
             />
+            {isFutureMonth(month, year) && (
+              <p style={{ fontSize: 10, color: 'var(--text3)', marginTop: 6, lineHeight: 1.4 }}>
+                This month is after the cloud transition. You can leave this blank to use the high-performance App-Only mode.
+              </p>
+            )}
           </div>
 
           {testMsg && (
@@ -317,13 +337,13 @@ function Settings({ role, months = [], activeSheetId, onSwitch, onMonthsChange }
           <button
             className="btn btn-primary"
             onClick={handleAdd}
-            disabled={adding || !input || !label}
+            disabled={adding || !label}
             style={{
               borderRadius: 10, padding: '12px 24px',
               background: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', border: 'none', fontWeight: 700
             }}
           >
-            {adding ? '⏳ Connecting...' : '⚡ Add & Connect'}
+            {adding ? '⏳ Connecting...' : '⚡ Add Month'}
           </button>
         </div>
       </div>

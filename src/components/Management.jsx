@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase, tables } from '../supabase';
-import { approveDeletion, rejectDeletion, logActivity } from '../lib/audit';
+import { approveDeletion, rejectDeletion } from '../lib/audit';
 import { formatDisplayDate } from '../lib/parseSheet';
 
 function Management({ user, role, isSuper }) {
@@ -70,9 +70,11 @@ function Management({ user, role, isSuper }) {
   };
 
   const getRecordSummary = (item) => {
-    if (item._table === 'partner_transactions') return `${item.partner_name}: ${item.amount} EGP (${item.notes})`;
-    if (item._table === 'expenses') return `${item.category}: ${item.amount} EGP (${item.description})`;
+    if (item._table === 'partner_transactions') return `${item.partner_name}: ${item.type} ${item.amount} EGP (${item.notes || 'No description'})`;
+    if (item._table === 'expenses') return `${item.category}: ${item.amount} EGP (${item.description || 'No description'})`;
     if (item._table === 'production') return `${item.worker_name}: ${item.bags_produced} bags`;
+    if (item._table === 'attendance') return `${item.worker_name} — Shift ${item.shift || 1} (${item.status || 'PRESENT'})`;
+    if (item._table === 'inventory') return `${item.item_name} — ${item.type} ${item.quantity} kg`;
     return JSON.stringify(item);
   };
 

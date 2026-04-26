@@ -149,63 +149,81 @@ function isTotal(row) {
 // ============================================================
 export function parseGeneralReport(rows) {
   let revenue = 0, totalCosts = 0, cashBalance = 0, openingBalance = 0, totalProducedOverride = 0;
-  let manualLedgerSum = 0;
+  let manualLedgerSum = 0, totalElectricity = 0, totalRent = 0;
   let detectedMonth = 0;
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
+    const colB = (row[1] || '').toLowerCase();
+    const colE = (row[4] || '').toLowerCase(); // Summary Table labels
+    const colJ = (row[9] || '').toLowerCase(); // Right-side ledger labels
     const searchString = row.map(c => cell(c)).join(' ').toLowerCase();
     
-    // Find ANY number in the row to use as a candidate value
     const rowNumbers = row.map(c => num(c)).filter(n => n !== 0);
     const primaryVal = rowNumbers[rowNumbers.length - 1] || 0;
 
-    if (searchString.includes('total revenue') || searchString.includes('total sales')) {
-      revenue = primaryVal;
+    // REVENUE ROW LOCKDOWN
+    if (colB.includes('total revenue') || colB.includes('total sales') || 
+        colB.includes('wageh') || colB.includes('income') ||
+        colE.includes('income') || colE.includes('revenue') ||
+       (revenue === 0 && searchString.includes('total revenue'))) {
+      if (primaryVal > 20000) {
+        revenue = primaryVal;
+        continue; // Lock revenue and skip expense checks
+      }
     }
     
-    // Manual Ledger Items (The components of 116,950)
-    const ledgerKeywords = ['material', 'master batch', 'rent', 'electricity', 'daily expenses', 'salaries', 'labour march'];
-    if (ledgerKeywords.some(k => searchString.includes(k))) {
-      // Avoid summing the 'start' reminder into the costs
-      if (!searchString.includes('reminder') && !searchString.includes('money')) {
-        // Search the row for a number that looks like a cost
-        const costVal = rowNumbers.find(n => n > 10) || primaryVal;
-        manualLedgerSum += costVal;
+    // Capture specific production override
+    if (searchString.includes('achived total production')) {
+      const prodVal = rowNumbers.find(n => n > 0 && n < 100) || primaryVal;
+      if (prodVal > 0) totalProducedOverride = prodVal;
+      continue;
+    }
+
+    // Manual Ledger Items & MULTISPECTRAL OVERRIDES
+    const labelSet = colB + ' ' + colE + ' ' + colJ + ' ' + searchString;
+    const isLedgerRow = ['material', 'batch', 'rent', 'electricity', 'power', 'daily expenses', 'salaries', 'labour march', 'كهرباء', 'ايجار'].some(k => labelSet.includes(k));
+    
+    if (isLedgerRow && !searchString.includes('reminder') && !searchString.includes('money')) {
+      const costVal = rowNumbers.find(n => n > 10) || primaryVal;
+      manualLedgerSum += costVal;
+      
+      // ABSOLUTE SUMMARY TABLE PRIORITY (Rows 40+, Focus on Column G / Last Value)
+      const isElectricity = labelSet.includes('electricity') || labelSet.includes('power') || 
+                            labelSet.includes('كهرباء') || labelSet.includes('فاتورة');
+      const isRent = labelSet.includes('rent') || labelSet.includes('ايجار') || labelSet.includes('إيجار');
+
+      if (isElectricity) {
+        if (i > 35 && primaryVal > 1000) {
+           totalElectricity = primaryVal;
+        } else if (totalElectricity === 0 && costVal <= 25000) {
+           totalElectricity = costVal;
+        }
+      } else if (isRent) {
+        if (i > 35 && primaryVal > 1000) {
+           totalRent = primaryVal;
+        } else if (totalRent === 0 && costVal <= 25000) {
+           totalRent = costVal;
+        }
       }
     }
 
-    // Capture specific production override (e.g. 2.73)
-    if (searchString.includes('achived total production')) {
-      // Specifically look for a small number like 2.73 in the row
-      const prodVal = rowNumbers.find(n => n > 0 && n < 100) || primaryVal;
-      if (prodVal > 0) totalProducedOverride = prodVal;
-    }
-
-    // Capture official manual reconciliation total from 'Cash Avilable' cell
+    // Capture official manual reconciliation total 
     if (searchString.includes('cash avilable') || searchString.includes('cash available')) {
-      // Find the specific manual total in cells J/K/L (indexes 9/10/11)
       const val = rowNumbers.find(n => n !== 0 && Math.abs(n) > 100) || primaryVal;
       if (val !== 0) cashBalance = val;
     }
 
-    // Capture manual 'Sub total' from the monthly expenses table
     if (searchString.includes('sub total') && i > 30) {
       const val = rowNumbers.find(n => n > 10000) || primaryVal;
       if (val > 10000) manualLedgerSum = val;
     }
     
-    // Capture opening reminder (136,000)
-    // The CSV has 'Tharwat Money Reminder' in one cell and '136,000' in the one below/nearby
     if (searchString.includes('tharwat money reminder')) {
-      // Look for 136,000 in the current row OR the next row
       const val = rowNumbers.find(n => n >= 100000) || primaryVal;
-      if (val > 100000) {
-        openingBalance = val;
-      }
+      if (val > 100000) openingBalance = val;
     }
 
-    // Detect month from header or cells
     if (searchString.includes('march')) detectedMonth = 3;
     if (searchString.includes('april')) detectedMonth = 4;
   }
@@ -220,6 +238,8 @@ export function parseGeneralReport(rows) {
     cashBalance, 
     openingBalance, 
     totalProducedOverride, 
+    totalElectricity,
+    totalRent,
     netProfit: officialNetProfit,
     month: detectedMonth,
     roboticTotalCosts: totalCosts // Keep for audit
@@ -806,7 +826,7 @@ export function parseTeamPerformance(rows) {
   return performance;
 }
 
-function calcHours(inStr, outStr) {
+export function calcHours(inStr, outStr) {
   if (!inStr || !outStr) return 0;
   const parse = (s) => {
     if (typeof s !== 'string') return 0;

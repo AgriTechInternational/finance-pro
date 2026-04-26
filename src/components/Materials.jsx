@@ -52,7 +52,7 @@ function Materials({ data, carryForward, globalStats }) {
   };
 
   const { materials = [], finishedGoods = [], summary = {} } = data;
-  const { totalProduced = 0, totalSold = 0 } = summary;
+  const { totalProduced = 0, totalSold = 0, masterBatchCost = 0, masterBatchCostPerTon = 0 } = summary;
 
   // ── Extract the _TOTALS_ synthetic row for aggregate KPIs ──
   const totalsRow    = materials.find(m => m._isTotalRow) || {};
@@ -91,9 +91,8 @@ function Materials({ data, carryForward, globalStats }) {
   // ── Finished goods aggregates from the parser ──
   const fgTotalProduced = finishedGoods.reduce((s, g) => s + (g.qty  || 0), 0);
   const fgTotalSold     = finishedGoods.reduce((s, g) => s + (g.sold || 0), 0);
-  // Use remaining from parser if available (sheet tracks it directly), else compute
-  const fgRemainingSum  = finishedGoods.reduce((s, g) => s + (g.remaining || 0), 0);
-  const fgLastRemaining = fgRemainingSum > 0 ? fgRemainingSum : Math.max(0, fgTotalProduced - fgTotalSold);
+  // Use the rolling unsold total from the engine (which carries forward from prior months)
+  const fgLastRemaining = summary.unsoldBags ?? Math.max(0, fgTotalProduced - fgTotalSold);
 
   // ── Average sell price per bag (from sales data) ──
   const salesRows        = (data.sales || []).filter(s => s.totalPrice > 0);
@@ -212,8 +211,8 @@ function Materials({ data, carryForward, globalStats }) {
         <div style={{ padding: '20px 24px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <div>
-              <h6 style={{ margin: 0, fontWeight: 700, color: 'var(--text1)' }}>🏭 Factory Production Inventory</h6>
-              <div style={{ fontSize: 12, color: 'var(--text3)' }}>Bags produced vs sold — run from End Product Inventory tab</div>
+              <h6 style={{ margin: 0, fontWeight: 700, color: 'var(--text1)' }}>🏭 Factory Production Stock (Absolute)</h6>
+              <div style={{ fontSize: 12, color: 'var(--text3)' }}>Total bags produced across all months minus total bags sold — Absolute factory inventory</div>
             </div>
             <div style={{ textAlign: 'right' }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--accent)', textTransform: 'uppercase' }}>Available (Unsold)</div>
@@ -250,7 +249,7 @@ function Materials({ data, carryForward, globalStats }) {
               borderRadius: 14, padding: '20px 24px'
             }}>
               <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', color: fgLastRemaining > 0 ? 'var(--accent2)' : 'var(--danger)', marginBottom: 6 }}>
-                📦 Remaining in Stock
+                📦 TOTAL STOCK IN FACTORY
               </div>
               <div style={{ fontFamily: 'var(--mono)', fontSize: 32, fontWeight: 800, color: fgLastRemaining > 0 ? 'var(--accent2)' : 'var(--danger)', lineHeight: 1 }}>
                 {fgLastRemaining}
@@ -362,6 +361,22 @@ function Materials({ data, carryForward, globalStats }) {
                 </div>
                 <div style={{ fontSize: 10, color: '#fca5a5', marginTop: 4 }}>
                   per ton (1,000 kg) · avg {fmt(Math.round(totalValue / totalReceivedKG))} EGP/kg
+                </div>
+              </div>
+            )}
+            {/* ─── Master Batch Unit Cost ─── */}
+            {masterBatchCost > 0 && (
+              <div style={{
+                background: 'linear-gradient(135deg, rgba(16,185,129,0.12), rgba(16,185,129,0.05))',
+                border: '1px solid rgba(16,185,129,0.3)',
+                padding: '14px 18px', borderRadius: 12,
+              }}>
+                <div style={{ fontSize: 11, color: '#6ee7b7', marginBottom: 4, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>🌈 Master Batch Cost</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: '#10b981', lineHeight: 1.1 }}>
+                  {fmt(Math.round(masterBatchCost))} EGP
+                </div>
+                <div style={{ fontSize: 10, color: '#6ee7b7', marginTop: 4 }}>
+                  @{fmt(Math.round(masterBatchCostPerTon))} / ton produced
                 </div>
               </div>
             )}

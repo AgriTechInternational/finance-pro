@@ -20,6 +20,19 @@ export async function logActivity({ user_email, action_type, table_name, record_
 }
 
 /**
+ * Wrapper for logActivity using positional arguments (legacy/component support).
+ */
+export async function logAuditTrail(user_email, action_type, table_name, record_id, record_details) {
+  return await logActivity({
+    user_email,
+    action_type,
+    table_name,
+    record_id,
+    record_details
+  });
+}
+
+/**
  * Requests deletion of a record (Admin action).
  */
 export async function requestDeletion(tableName, recordId, userEmail) {

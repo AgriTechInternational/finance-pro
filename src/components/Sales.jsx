@@ -3,6 +3,7 @@ import { formatDisplayDate, toISO } from '../lib/parseSheet';
 import { supabase, tables } from '../supabase';
 import DataEntryModal from './DataEntryModal';
 import { requestDeletion } from '../lib/audit';
+import { clearEngineCache } from '../lib/useSheetEngine';
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-US');
 
@@ -11,7 +12,9 @@ const ALL_PARTNERS = ['Wageh', 'Nour', 'Haitham', 'Elwady', 'El Wady', 'Emad', '
 function Sales({ data, user, role, isAdmin, isSuper }) {
   const [isSaleModalOpen, setIsSaleModalOpen] = useState(false);
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [isAdjModalOpen, setIsAdjModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null); // inline confirm state
   const [newSale, setNewSale] = useState({
     date: new Date().toISOString().split('T')[0],
     customer: '', // To be set on open
@@ -24,6 +27,13 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
   const [newPay, setNewPay] = useState({
     date: new Date().toISOString().split('T')[0],
     customer: '', // To be set on open
+    amount: '',
+    note: ''
+  });
+  const [newAdj, setNewAdj] = useState({
+    date: new Date().toISOString().split('T')[0],
+    customer: '', 
+    type: 'Debit',
     amount: '',
     note: ''
   });
@@ -40,6 +50,7 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
     setIsSaving(true);
     const total = parseFloat(newSale.quantity) * parseFloat(newSale.pricePerBag);
     try {
+      const isTest = localStorage.getItem('finance_pro_test_mode') === 'true';
       // 1. Log the Sale transaction
       const { error: saleErr } = await supabase.from(tables.TRANSACTIONS).insert([
         {
@@ -47,7 +58,8 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
           date: newSale.date,
           type: 'Debit', // Sale is a debt from customer perspective
           amount: total,
-          notes: `Sale: ${newSale.quantity}x ${newSale.product} @ ${newSale.pricePerBag} EGP. ${newSale.note}`
+          notes: `Sale: ${newSale.quantity}x ${newSale.product} @ ${newSale.pricePerBag} EGP. ${newSale.note}`,
+          is_dev_test: isTest
         }
       ]);
       if (saleErr) throw saleErr;
@@ -60,12 +72,14 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
             date: newSale.date,
             type: 'Credit', // Payment reduces debt
             amount: parseFloat(newSale.paid),
-            notes: `Downpayment for sale on ${newSale.date}`
+            notes: `Downpayment for sale on ${newSale.date}`,
+            is_dev_test: isTest
           }
         ]);
         if (payErr) throw payErr;
       }
 
+      clearEngineCache();
       setIsSaleModalOpen(false);
       window.location.reload();
     } catch (e) {
@@ -91,7 +105,34 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
         }
       ]);
       if (error) throw error;
+      clearEngineCache();
       setIsPayModalOpen(false);
+      window.location.reload();
+    } catch (e) {
+      alert("Error: " + e.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveAdjustment = async () => {
+    if (!newAdj.amount) return alert("Please enter amount");
+    setIsSaving(true);
+    const isTest = localStorage.getItem('finance_pro_test_mode') === 'true';
+    try {
+      const { error } = await supabase.from(tables.TRANSACTIONS).insert([
+        {
+          partner_name: newAdj.customer || tab,
+          date: newAdj.date,
+          type: newAdj.type,
+          amount: parseFloat(newAdj.amount),
+          notes: newAdj.note || `Manual ${newAdj.type} Adjustment`,
+          is_dev_test: isTest
+        }
+      ]);
+      if (error) throw error;
+      clearEngineCache();
+      setIsAdjModalOpen(false);
       window.location.reload();
     } catch (e) {
       alert("Error: " + e.message);
@@ -102,16 +143,19 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
 
   const handleDelete = async (item) => {
     if (!isAdmin) return;
-    if (!window.confirm("Are you sure you want to request deletion for this record? This will require approval from a Super User.")) return;
-    
+    setConfirmDeleteId(item.id);
+  };
+
+  const handleConfirmDelete = async (item) => {
+    setConfirmDeleteId(null);
     setIsSaving(true);
     try {
-      // Sales transactions are in the partner_transactions table
       const { error } = await requestDeletion(tables.TRANSACTIONS, item.id, user.email);
       if (error) throw error;
+      clearEngineCache();
       window.location.reload();
     } catch (e) {
-      alert("Delete Request Failed: " + e.message);
+      alert('Delete Request Failed: ' + e.message);
     } finally {
       setIsSaving(false);
     }
@@ -120,12 +164,23 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
   const { sales = [] } = data;
 
   // Build flat list of all customers found in data + known defaults
-  const foundPartners = [...new Set(sales.map(s => s.customer))];
-  const allTabs = [...new Set([...ALL_PARTNERS, ...foundPartners])];
+  // Normalize names to avoid duplicate tabs from trailing spaces or casing
+  const foundPartners = [...new Set(sales.map(s => (s.customer || '').trim()))];
+  const allTabs = [...new Set([...ALL_PARTNERS, ...foundPartners])].filter(Boolean);
 
   const [tab, setTab] = useState(foundPartners[0] || allTabs[0]);
 
-  const customerSales = sales.filter(s => s.customer === tab);
+  // Use trimmed comparison for robust filtering
+  const customerSalesRaw = sales.filter(s => (s.customer || '').trim() === (tab || '').trim());
+  
+  // ── LEDGER CALCULATION: Running Balance ──
+  let cumulativeBal = 0;
+  const customerSales = [...customerSalesRaw]
+    .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+    .map(s => {
+      cumulativeBal += (s.totalPrice || 0) - (s.paid || 0);
+      return { ...s, runningBal: cumulativeBal };
+    });
 
   // Only count rows with totalPrice > 0 as sales transactions
   const salesRows    = customerSales.filter(s => s.totalPrice > 0);
@@ -135,11 +190,13 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
   // Outstanding = totalPrice minus everything paid (including standalone payments)
   const totalRemain  = Math.max(0, totalPrice - totalPaid);
 
-  const overallRevenue = sales.filter(s => s.totalPrice > 0).reduce((s, r) => s + r.totalPrice, 0);
-  const overallPaid    = sales.reduce((s, r) => s + (r.paid || 0), 0);
-  const overallRemain  = Math.max(0, overallRevenue - overallPaid);
+  const overallRevenue  = sales.reduce((s, r) => s + (r.totalPrice || 0), 0);
+  const overallPaid     = sales.reduce((s, r) => s + (r.paid || 0), 0);
+  const overallRemain   = Math.max(0, overallRevenue - overallPaid);
+  const overallBags     = sales.reduce((s, r) => s + (r.quantity || 0), 0);
+  const overallReturn   = sales.filter(s => s.totalPrice < 0).reduce((s, r) => s + (r.totalPrice || 0), 0);
 
-  const hasSales = salesRows.length > 0 && totalPrice > 0;
+  const hasSales = customerSales.length > 0;
 
   return (
     <div>
@@ -150,6 +207,12 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
             <div className="page-sub">Live from Google Sheets + Supabase — all customer tabs</div>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
+            <button className="btn btn-secondary" onClick={() => {
+              setNewAdj({...newAdj, customer: tab, type: 'Debit', note: 'Starting Balance'});
+              setIsAdjModalOpen(true);
+            }}>
+              ⚖️ Set Balance
+            </button>
             <button className="btn btn-secondary" onClick={() => {
               setNewPay({...newPay, customer: tab});
               setIsPayModalOpen(true);
@@ -172,7 +235,7 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
           <div className="kpi" style={{ '--kpi-color': 'var(--accent2)' }}>
             <div className="kpi-label">All Revenue</div>
             <div className="kpi-value" style={{ color: 'var(--accent2)' }}>{fmt(overallRevenue)} EGP</div>
-            <div className="kpi-sub">{foundPartners.length} active customers</div>
+            <div className="kpi-sub">{fmt(overallBags)} bags · {(overallBags / 50).toFixed(2)} tons sold</div>
           </div>
           <div className="kpi" style={{ '--kpi-color': 'var(--accent)' }}>
             <div className="kpi-label">Total Collected</div>
@@ -192,8 +255,9 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
       {/* Partner tabs */}
       <div className="tabs" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
         {allTabs.map(c => {
-          const hasData = sales.some(s => s.customer === c && s.totalPrice > 0);
-          const custSales = sales.filter(s => s.customer === c);
+          const trimmedC = (c || '').trim();
+          const hasData = sales.some(s => (s.customer || '').trim() === trimmedC && (s.totalPrice > 0 || s.paid > 0));
+          const custSales = sales.filter(s => (s.customer || '').trim() === trimmedC);
           const custPrice = custSales.filter(s => s.totalPrice > 0).reduce((s, r) => s + r.totalPrice, 0);
           const custPaid  = custSales.reduce((s, r) => s + (r.paid || 0), 0);
           const custOwed  = Math.max(0, custPrice - custPaid);
@@ -223,6 +287,7 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
           <div className="kpi" style={{ '--kpi-color': 'var(--accent2)' }}>
             <div className="kpi-label">Total Amount</div>
             <div className="kpi-value">{fmt(totalPrice)} EGP</div>
+            <div className="kpi-sub">{fmt(salesRows.reduce((s, r) => s + (r.quantity || 0), 0))} bags · {(salesRows.reduce((s, r) => s + (r.quantity || 0), 0) / 50).toFixed(2)} t</div>
           </div>
           <div className="kpi" style={{ '--kpi-color': 'var(--accent)' }}>
             <div className="kpi-label">Total Paid</div>
@@ -258,10 +323,9 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
                 <tr>
                   <th>Date</th>
                   <th>Description</th>
-                  <th>Total Price</th>
-                  <th>Paid</th>
-                  <th>Remaining</th>
-                  <th>Payment Type</th>
+                  <th style={{ textAlign: 'right' }}>Debt (Debit)</th>
+                  <th style={{ textAlign: 'right' }}>Payment (Credit)</th>
+                  <th style={{ textAlign: 'right' }}>Running Balance</th>
                   <th>Status</th>
                   {isAdmin && <th style={{ textAlign: "right" }}>Actions</th>}
                 </tr>
@@ -273,44 +337,51 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
                   const isPaymentRow = !isSaleRow && s.paid > 0;
                   const rowRemain    = s.remain || 0;
                   return (
-                    <tr key={i} style={{ opacity: isPaymentRow ? 0.8 : 1 }}>
+                    <tr key={i} style={{ opacity: isPaymentRow ? 0.9 : 1, background: isPaymentRow ? 'rgba(59,130,246,0.02)' : 'transparent' }}>
                       <td style={{ fontSize: 12, fontWeight: 600 }}>
                         {formatDisplayDate(s.date)}
                       </td>
                       <td style={{ fontSize: 12, color: 'var(--text3)' }}>
-                        {isPaymentRow ? '💳 Payment Received' : (s.description || '—')}
+                        {isPaymentRow
+                          ? <span>💳 {s.notes || s.description || 'Payment Received'}</span>
+                          : <span>{s.notes || s.description || '—'}</span>}
                       </td>
-                      <td className={isSaleRow ? 'amount-pos' : ''} style={{ color: isSaleRow ? undefined : 'var(--text3)' }}>
+                      <td style={{ textAlign: 'right', color: isSaleRow ? 'white' : 'var(--text3)', fontFamily: 'var(--mono)' }}>
                         {isSaleRow ? fmt(s.totalPrice) : '—'}
                       </td>
-                      <td className="amount-pos">{s.paid > 0 ? fmt(s.paid) : '—'}</td>
-                      <td className={rowRemain > 0 ? 'amount-neg' : 'amount-pos'}>
-                        {isSaleRow
-                          ? (rowRemain > 0 ? `(${fmt(rowRemain)})` : '—')
-                          : '—'}
+                      <td style={{ textAlign: 'right', color: s.paid > 0 ? 'var(--accent2)' : 'var(--text3)', fontFamily: 'var(--mono)', fontWeight: 700 }}>
+                        {s.paid > 0 ? fmt(s.paid) : '—'}
                       </td>
-                      <td style={{ fontSize: 11, color: 'var(--text3)' }}>
-                        {s.paymentType || '—'}
+                      <td style={{ textAlign: 'right', fontFamily: 'var(--mono)' }}>
+                        <strong style={{ color: s.runningBal > 0 ? '#f59e0b' : 'var(--accent2)' }}>
+                          {fmt(s.runningBal)} EGP
+                        </strong>
                       </td>
                       <td>
                         {isPaymentRow
                           ? <span className="badge" style={{ background: 'rgba(59,130,246,0.15)', color: '#60a5fa', border: '1px solid rgba(59,130,246,0.3)' }}>Payment</span>
-                          : rowRemain > 0
-                            ? <span className="badge badge-yellow">Partial</span>
+                          : s.runningBal > 0
+                            ? <span className="badge badge-yellow">Unsettled</span>
                             : <span className="badge badge-green">Settled</span>}
                       </td>
                       {isAdmin && (
                         <td style={{ textAlign: 'right' }}>
-                          {!s.is_delete_pending ? (
-                            <button 
-                              onClick={() => handleDelete(s)} 
+                          {s.is_delete_pending ? (
+                            <span title="Waiting for Super User approval" style={{ fontSize: 10, color: '#f59e0b', fontWeight: 700 }}>PENDING</span>
+                          ) : confirmDeleteId === s.id ? (
+                            <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                              <span style={{ fontSize: 11, color: '#ef4444' }}>Delete?</span>
+                              <button onClick={() => handleConfirmDelete(s)} style={{ background: '#ef4444', border: 'none', color: 'white', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}>Yes</button>
+                              <button onClick={() => setConfirmDeleteId(null)} style={{ background: 'rgba(255,255,255,0.1)', border: 'none', color: 'white', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}>No</button>
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => handleDelete(s)}
                               style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', opacity: 0.6 }}
                               title="Request Deletion"
                             >
                               🗑️
                             </button>
-                          ) : (
-                            <span title="Waiting for Super User approval" style={{ fontSize: 10, color: '#f59e0b', fontWeight: 700 }}>PENDING</span>
                           )}
                         </td>
                       )}
@@ -396,6 +467,58 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
         <div className="field">
           <label>Note / Reference</label>
           <input type="text" placeholder="Installment, cash, etc." value={newPay.note} onChange={e => setNewPay({...newPay, note: e.target.value})} />
+        </div>
+      </DataEntryModal>
+
+      {/* ADJUSTMENT MODAL */}
+      <DataEntryModal 
+        title={`Ledger Adjustment — ${tab}`} 
+        isOpen={isAdjModalOpen} 
+        onClose={() => setIsAdjModalOpen(false)} 
+        onSave={handleSaveAdjustment}
+        loading={isSaving}
+      >
+        <div style={{ marginBottom: 20, padding: 12, background: 'rgba(59,130,246,0.1)', borderRadius: 12, border: '1px solid rgba(59,130,246,0.2)', fontSize: 12 }}>
+          <strong>💡 Pro-tip:</strong> Use this to set a <strong>Starting Balance</strong> or to record a <strong>Manual Debt</strong> that isn't from a bag sale.
+        </div>
+        <div className="field">
+          <label>Partner / Customer</label>
+          <select value={newAdj.customer} onChange={e => setNewAdj({...newAdj, customer: e.target.value})}>
+            {allTabs.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Date</label>
+          <input type="date" value={newAdj.date} onChange={e => setNewAdj({...newAdj, date: e.target.value})} />
+        </div>
+        <div className="field">
+          <label>Adjustment Type</label>
+          <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+            <button 
+              type="button" 
+              className={`btn btn-sm ${newAdj.type === 'Debit' ? 'btn-primary' : 'btn-secondary'}`} 
+              onClick={() => setNewAdj({...newAdj, type: 'Debit'})}
+              style={{ flex: 1 }}
+            >
+              Add Debt (+)
+            </button>
+            <button 
+              type="button" 
+              className={`btn btn-sm ${newAdj.type === 'Credit' ? 'btn-primary' : 'btn-secondary'}`} 
+              onClick={() => setNewAdj({...newAdj, type: 'Credit'})}
+              style={{ flex: 1 }}
+            >
+              Reduce Debt (-)
+            </button>
+          </div>
+        </div>
+        <div className="field" style={{ marginTop: 16 }}>
+          <label>Amount (EGP)</label>
+          <input type="number" placeholder="0.00" value={newAdj.amount} onChange={e => setNewAdj({...newAdj, amount: e.target.value})} />
+        </div>
+        <div className="field">
+          <label>Description (Path/Note)</label>
+          <input type="text" placeholder="e.g. Opening Balance, Cash Settlement..." value={newAdj.note} onChange={e => setNewAdj({...newAdj, note: e.target.value})} />
         </div>
       </DataEntryModal>
     </div>

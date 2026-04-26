@@ -1,0 +1,5 @@
+- `[x]` Engine: Calculate `totalLaborCosts` from `teamPerformance` in `useSheetEngine.js`
+- `[x]` Engine: Deduct `totalLaborCosts` from `adjustedNetProfit` in the monthly summary
+- `[x]` Engine: Update `useYTDEngine.js` to aggregate labor costs across all months
+- `[x]` UI: Add 'Staff Salaries' line item to the Dashboard P&L breakdown
+- `[x]` Verification: Confirm Net Profit logic (Revenue - COGS - Opex - Salaries)

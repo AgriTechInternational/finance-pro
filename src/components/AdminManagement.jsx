@@ -42,7 +42,7 @@ export default function AdminManagement({ role, userEmail }) {
   }
 
   async function fetchAuditLogs() {
-    const { data } = await supabase.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(50);
+    const { data } = await supabase.from('audit_trail').select('*').order('created_at', { ascending: false }).limit(100);
     if (data) setAuditLogs(data);
   }
 
@@ -52,12 +52,16 @@ export default function AdminManagement({ role, userEmail }) {
       .from('profiles')
       .select('*')
       .or('is_delete_pending.eq.true,pending_role.not.is.null');
+
+    // Fetch partner_transactions pending deletion
+    const { data: txRequests } = await supabase
+      .from('partner_transactions')
+      .select('*')
+      .eq('is_delete_pending', true);
       
-    if (profileRequests) {
-      setPendingDeletions(profileRequests.map(p => ({ ...p, _type: 'PROFILE', _tableName: 'profiles' })));
-    } else {
-      setPendingDeletions([]); 
-    }
+    const profileItems = (profileRequests || []).map(p => ({ ...p, _type: 'PROFILE', _tableName: 'profiles', _label: p.email || p.id }));
+    const txItems = (txRequests || []).map(t => ({ ...t, _type: 'TRANSACTION', _tableName: 'partner_transactions', _label: `${t.partner_name} — ${t.type} ${Number(t.amount).toLocaleString()} EGP (${t.date})` }));
+    setPendingDeletions([...profileItems, ...txItems]);
   }
 
   async function updateRole(userId, targetEmail, newRole) {
@@ -138,7 +142,14 @@ export default function AdminManagement({ role, userEmail }) {
   const approveRequest = async (item) => {
     if (!isSuper) return;
     
-    if (item.is_delete_pending) {
+    if (item._type === 'TRANSACTION') {
+      // Soft-delete the transaction by setting deleted_at
+      const { error } = await supabase.from('partner_transactions').update({ deleted_at: new Date().toISOString(), is_delete_pending: false }).eq('id', item.id);
+      if (!error) {
+        await logAuditTrail(userEmail, 'DELETE_APPROVED', 'partner_transactions', item.id, `Approved deletion for ${item._label}`);
+        fetchPendingDeletions();
+      }
+    } else if (item.is_delete_pending) {
       const { error } = await supabase.from('profiles').delete().eq('id', item.id);
       if (!error) {
         await logAuditTrail(userEmail, 'PROFILE_PURGED', 'USER', item.id, `Approved purge request for ${item.email}`);
@@ -288,11 +299,13 @@ export default function AdminManagement({ role, userEmail }) {
                 {auditLogs.map(log => (
                   <div key={log.id} style={{ padding: 16, borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.1)', borderRadius: 12, marginBottom: 8 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                       <span style={{ fontSize: 10, fontWeight: 900, background: '#1e3a8a', color: '#60a5fa', padding: '2px 8px', borderRadius: 4, letterSpacing: '0.05em' }}>{log.action}</span>
+                       <span style={{ fontSize: 10, fontWeight: 900, background: '#1e3a8a', color: '#60a5fa', padding: '2px 8px', borderRadius: 4, letterSpacing: '0.05em' }}>{log.action_type}</span>
                        <span style={{ fontSize: 10, color: 'var(--text3)', fontFamily: 'monospace' }}>{new Date(log.created_at).toLocaleString()}</span>
                     </div>
                     <div style={{ fontWeight: 700, color: 'var(--text1)', fontSize: 13, marginBottom: 4 }}>{log.user_email}</div>
-                    <div style={{ fontSize: 11, color: 'var(--text3)', fontStyle: 'italic', borderLeft: '2px solid var(--border)', paddingLeft: 12 }}>{log.details}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text3)', fontStyle: 'italic', borderLeft: '2px solid var(--border)', paddingLeft: 12 }}>
+                      {typeof log.record_details === 'object' ? (log.record_details?.msg || JSON.stringify(log.record_details)) : log.record_details}
+                    </div>
                   </div>
                 ))}
                 {auditLogs.length === 0 && <div style={{ textAlign: 'center', padding: 40, opacity: 0.5 }}>No entries in audit buffer.</div>}
@@ -301,13 +314,36 @@ export default function AdminManagement({ role, userEmail }) {
         )}
 
         {activeTab === 'PURGE' && (
-          <div style={{ padding: 24, textAlign: 'center' }}>
-            <div style={{ opacity: 0.5, marginBottom: 12 }}><AlertTriangle size={48} style={{ margin: '0 auto', color: '#f59e0b' }}/></div>
-            <h4 style={{ fontWeight: 900, textTransform: 'uppercase', fontSize: 14 }}>Security Disposal Hub</h4>
-            <p style={{ fontSize: 12, color: 'var(--text3)', maxWidth: 400, margin: '12px auto 24px' }}>Records requested for archival will appear here for Super User authorization.</p>
-            <div style={{ background: 'rgba(0,0,0,0.1)', padding: 40, borderRadius: 16, border: '1px dashed var(--border)' }}>
-               <span style={{ fontSize: 10, fontWeight: 900, color: 'var(--text3)', textTransform: 'uppercase' }}>Queue Clear: No pending items</span>
+          <div style={{ padding: 24 }} className="animate-in fade-in">
+            <div style={{ display: 'flex', alignItems: 'center', color: '#f59e0b', background: 'rgba(245,158,11,0.1)', padding: '10px 16px', borderRadius: 12, marginBottom: 20 }}>
+              <AlertTriangle size={14} style={{ marginRight: 8 }} />
+              <span style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Security Disposal Hub — Pending Approval</span>
             </div>
+            {pendingDeletions.length === 0 ? (
+              <div style={{ background: 'rgba(0,0,0,0.1)', padding: 40, borderRadius: 16, border: '1px dashed var(--border)', textAlign: 'center' }}>
+                <span style={{ fontSize: 10, fontWeight: 900, color: 'var(--text3)', textTransform: 'uppercase' }}>Queue Clear: No pending items</span>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {pendingDeletions.map(item => (
+                  <div key={item.id} style={{ padding: 16, background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 900, color: '#f59e0b', textTransform: 'uppercase', marginBottom: 4 }}>{item._type} — {item.is_delete_pending ? 'Delete Request' : `Role → ${item.pending_role}`}</div>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{item._label}</div>
+                      {item.delete_requested_by && <div style={{ fontSize: 11, color: 'var(--text3)' }}>Requested by: {item.delete_requested_by}</div>}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button onClick={() => approveRequest(item)} style={{ background: '#10b981', color: 'white', border: 'none', padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 900 }}>
+                        <CheckCircle size={12} style={{ marginRight: 4, display: 'inline' }} />Approve
+                      </button>
+                      <button onClick={() => rejectRequest(item)} style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.3)', padding: '8px 16px', borderRadius: 8, cursor: 'pointer', fontSize: 11, fontWeight: 900 }}>
+                        <XCircle size={12} style={{ marginRight: 4, display: 'inline' }} />Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

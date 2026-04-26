@@ -3,12 +3,52 @@ import { clearAllNotifications } from '../lib/notifications';
 
 const fmt = (n) => Number(n || 0).toLocaleString('en-US');
 
-function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUpdates, carryForward, isYTD, globalStats = {} }) {
+function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUpdates, carryForward, isYTD, globalStats = {}, loadingStage, error }) {
+  const [updateAvailable, setUpdateAvailable] = React.useState(null);
+  const APP_VERSION = '8.2.0'; // HARDCODED: Must match version.json
+
+  // 🔄 AUTO-UPDATER: Poll for new versions every 60s
+  React.useEffect(() => {
+    const checkUpdate = async () => {
+      try {
+        const res = await fetch('./version.json?cb=' + Date.now());
+        if (res.ok) {
+          const remote = await res.json();
+          if (remote.version && remote.version !== APP_VERSION) {
+            setUpdateAvailable(remote.version);
+          }
+        }
+      } catch (err) { /* ignore polling errors */ }
+    };
+    checkUpdate();
+    const interval = setInterval(checkUpdate, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleUpdateRefresh = () => {
+    window.location.href = window.location.pathname + '?nuke=true&v=' + Date.now();
+  };
+
+  if (error) return (
+    <div key="dash-error-state" style={{ padding: 60, textAlign: 'center', color: 'var(--danger)' }}>
+      <div style={{ fontSize: 40, marginBottom: 20 }}>⚠️</div>
+      <div style={{ fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Data Sync Failure</div>
+      <div style={{ fontSize: 11, marginTop: 8, color: 'var(--text3)' }}>{error}</div>
+      <button 
+        onClick={() => { localStorage.clear(); window.location.reload(); }}
+        className="btn btn-primary" 
+        style={{ marginTop: 24, fontSize: 11 }}
+      >
+        Repair Connection & Reset Cache
+      </button>
+    </div>
+  );
+
   if (!data || !data.summary) return (
     <div key="dash-sync-state" style={{ padding: 60, textAlign: 'center', color: 'var(--text3)' }}>
       <div className="spinner" style={{ margin: '0 auto 20px' }}></div>
-      <div style={{ fontSize: 13, fontWeight: 700, color: 'white', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Calculating Engineering Performance...</div>
-      <div style={{ fontSize: 11, marginTop: 8 }}>Recalibrating unit economics from Google Sheets</div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: 'white', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{loadingStage || 'Calculating Engineering Performance...'}</div>
+      <div style={{ fontSize: 11, marginTop: 8 }}>{loadingStage ? 'Recalibrating unit economics from Google Sheets' : 'Determining weighted average and inventory carry-over'}</div>
     </div>
   );
 
@@ -16,9 +56,12 @@ function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUp
   const {
     totalRevenue = 0, totalPaid = 0, totalOutstanding = 0,
     totalCosts = 0, netProfit = 0, totalProduced = 0, cashBalance = 0,
-    materialCOGS = 0, operatingCosts = 0, materialCosts = 0,
+    materialCOGS = 0, operatingCosts = 0, materialCosts = 0, totalLaborCosts = 0,
+    matPortion = 0, batchPortion = 0,
+    electricityCosts = 0, rentCosts = 0, totalAuditNetProfit = 0,
     rawMatAssetValue = 0, finishedGoodsAssetVal = 0, totalInventoryAsset = 0,
-    rawMatAvailKg = 0, unsoldBags = 0, avgMatCostPerKg = 0,
+    rawMatAvailKg = 0, unsoldBags = 0, avgMatCostPerKg = 0, masterBatchCost = 0, masterBatchCostPerTon = 0,
+    totalSold = 0, totalProducedBags = 0
   } = summary;
 
   // ── Cross-month inventory fallback ──
@@ -49,7 +92,7 @@ function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUp
   const kpis = [
     { label: 'Available Cash',           value: `${fmt(Math.round(summary?.availableCash || cashBalance))} EGP`, sub: `Collected: ${fmt(Math.round(totalPaid))} − Paid costs: ${fmt(Math.round(summary?.totalPaidCosts || 0))}`, color: (summary?.availableCash || cashBalance) >= 0 ? 'var(--accent2)' : 'var(--danger)' },
     { label: 'Total Revenue',            value: `${fmt(Math.round(totalRevenue))} EGP`,    sub: totalOutstanding > 0 ? `Collected: ${fmt(Math.round(totalPaid))} · Uncollected: ${fmt(Math.round(totalOutstanding))}` : `Fully collected: ${fmt(Math.round(totalPaid))} EGP`, color: 'var(--accent2)' },
-    { label: 'Total Costs (P&L)',        value: `${fmt(Math.round(totalCosts))} EGP`,      sub: `Operating costs ${fmt(Math.round(operatingCosts))} + Raw material used (COGS) ${fmt(Math.round(materialCOGS))}`, color: 'var(--danger)' },
+    { label: 'Total Costs (P&L)',        value: `${fmt(Math.round(totalCosts))} EGP`,      sub: `Op. costs ${fmt(Math.round(operatingCosts))} + Salaries ${fmt(Math.round(totalLaborCosts))} + Mat COGS ${fmt(Math.round(materialCOGS))}`, color: 'var(--danger)' },
     ...(totalOutstanding > 0 ? [{ label: 'Outstanding', value: `${fmt(Math.round(totalOutstanding))} EGP`, sub: 'Uncollected receivables — confirm in sales ledger', color: 'var(--accent3)' }] : []),
     { label: 'Inventory Assets',         value: `${fmt(Math.round(effectiveTotalInvAsset))} EGP`, sub: `Raw material ${fmt(Math.round(effectiveRawMatAsset))} (${(effectiveRawMatKg/1000).toFixed(2)} t${usingCrossMonthInventory ? ' — cross-month' : ''}) + Unsold goods ${fmt(Math.round(finishedGoodsAssetVal))} (${unsoldBags} bags · ${unsoldBagsTons.toFixed(2)} t)`, color: '#a78bfa' },
     { label: 'Total Material Purchased', value: `${fmt(Math.round(materialCosts))} EGP`,  sub: `Sold COGS ${fmt(Math.round(materialCOGS))} (${cogsTons.toFixed(2)} t) + In stock ${fmt(Math.round(effectiveRawMatAsset + finishedGoodsAssetVal))} (${((effectiveRawMatKg/1000) + unsoldBagsTons).toFixed(2)} t)`, color: 'var(--accent3)' },
@@ -58,8 +101,8 @@ function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUp
   return (
     <div>
       {/* Header */}
-      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div>
+      <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16 }}>
+        <div style={{ minWidth: '200px' }}>
           <div className="page-title">{isYTD ? 'Year-to-Date Performance' : 'Finance Overview'}</div>
           <div className="page-sub">AgriTech Pro · {isYTD ? 'All Registered Months' : (monthLabel || 'Live Stream')}</div>
         </div>
@@ -71,6 +114,40 @@ function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUp
           <span>↻</span> Refresh Now
         </button>
       </div>
+
+      {/* ── UPDATE AVAILABLE BANNER ── */}
+      {updateAvailable && (
+        <div style={{
+          background: 'linear-gradient(90deg, rgba(16,185,129,0.1) 0%, rgba(5,150,105,0.1) 100%)',
+          border: '1px solid rgba(16,185,129,0.2)',
+          borderRadius: 16, padding: '16px 20px', marginBottom: 20,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          animation: 'slideIn 0.3s ease-out'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 20 }}>✨</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#10b981' }}>
+                Update Available (v{updateAvailable})
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text3)' }}>
+                A newer version of Finance Pro is ready. Refresh now to sync your audit data.
+              </div>
+            </div>
+          </div>
+          <button 
+            onClick={handleUpdateRefresh}
+            className="btn" 
+            style={{ 
+              fontSize: 11, fontWeight: 700, padding: '8px 16px', 
+              background: '#10b981', color: 'white', borderRadius: 10,
+              boxShadow: '0 4px 12px rgba(16,185,129,0.2)'
+            }}
+          >
+            Refresh Now
+          </button>
+        </div>
+      )}
 
       {/* ── NEW UPDATES NOTIFICATION ── */}
       {newUpdates.length > 0 && (
@@ -127,18 +204,19 @@ function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUp
         }}>
           <div style={{ fontSize: 9, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.15em', color: '#a78bfa', flexShrink: 0 }}>📊 All Months — YTD</div>
           {[
-            { label: 'Revenue',    val: globalStats.totalRevenue,  color: '#10b981' },
+            { label: 'Revenue',    val: globalStats.totalRevenue,  color: '#10b981', subVal: `${fmt(globalStats.totalSold)} bags · ${((globalStats.totalSold || 0) / 50).toFixed(2)} t` },
             { label: 'Costs',      val: globalStats.totalCosts,    color: '#ef4444' },
             { label: 'Net Profit', val: globalStats.netProfit,     color: globalStats.netProfit >= 0 ? '#10b981' : '#ef4444' },
             { label: 'Collected',  val: globalStats.totalPaid,     color: '#60a5fa' },
             { label: 'Outstanding',val: globalStats.totalOutstanding, color: '#f59e0b' },
-          ].map(({ label, val, color }) => (
+          ].map(({ label, val, color, subVal }) => (
             <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <div style={{ fontSize: 9, color: 'var(--text3)', textTransform: 'uppercase' }}>{label}</div>
               <div style={{ fontSize: 13, fontWeight: 800, color, fontFamily: 'var(--mono)' }}>{fmt(Math.round(val))} <span style={{ fontSize: 9, opacity: 0.7 }}>EGP</span></div>
+              {subVal && <div style={{ fontSize: 9, color: 'var(--text3)', marginTop: 1 }}>{subVal}</div>}
             </div>
           ))}
-          <div style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--text3)', fontStyle: 'italic' }}>↑ cumulative across {globalStats.monthCount} months · current month detail below</div>
+          <div style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--text3)', fontStyle: 'italic' }}>↑ cumulative across {globalStats.monthCount} months · includes all maintenance & misc costs</div>
         </div>
       )}
 
@@ -150,7 +228,7 @@ function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUp
         border: `1px solid ${isProfit ? 'rgba(16,185,129,0.4)' : 'rgba(239,68,68,0.4)'}`,
         backdropFilter: 'var(--glass)',
         borderRadius: 24,
-        padding: '40px',
+        padding: 'clamp(20px, 5vw, 40px)',
         marginBottom: 24,
         display: 'flex',
         alignItems: 'center',
@@ -159,43 +237,68 @@ function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUp
         gap: 32,
         boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
       }}>
-        <div style={{ flex: 1, minWidth: 300 }}>
+        <div style={{ flex: '1 1 300px', minWidth: 0 }}>
           <div style={{
             fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.25em',
             color: isProfit ? 'var(--accent2)' : 'var(--danger)', marginBottom: 12,
             fontFamily: 'var(--mono)',
           }}>
-            <span>{isYTD ? (isProfit ? '✧ YTD Total Net Profit' : '✧ YTD Total Net Loss') : (isProfit ? '✧ Operating Net Profit' : '✧ Operating Net Loss')}</span>
+            <span>{isYTD ? (isProfit ? '✧ YTD Total Net Profit (Full Audit)' : '✧ YTD Total Net Loss (Full Audit)') : (isProfit ? '✧ Monthly Operational Net Profit' : '✧ Monthly Operational Net Loss')}</span>
           </div>
-          <div style={{
-            fontFamily: 'var(--mono)', fontSize: 64, fontWeight: 800, lineHeight: 1,
+          <div className="hero-value" style={{
+            fontFamily: 'var(--mono)', fontSize: 'clamp(32px, 8vw, 64px)', fontWeight: 800, lineHeight: 1,
             color: isProfit ? 'var(--accent2)' : 'var(--danger)',
             textShadow: `0 0 30px ${isProfit ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
+            wordBreak: 'break-all'
           }}>
             <span>{isProfit ? '+' : ''}</span><span>{fmt(Math.round(netProfit))}</span>
-            <span style={{ fontSize: 24, marginLeft: 12, opacity: 0.5, fontWeight: 400 }}>EGP</span>
+            <span style={{ fontSize: '0.4em', marginLeft: 12, opacity: 0.5, fontWeight: 400 }}>EGP</span>
           </div>
           <div style={{ display: 'flex', gap: 24, marginTop: 24, flexWrap: 'wrap' }}>
             {/* P&L Breakdown */}
             <div style={{ flex: 1, minWidth: 280 }}>
               <div style={{ fontWeight: 800, color: 'var(--text2)', marginBottom: 8, textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.1em' }}>
-                {isYTD ? '1. Cumulative P&L (Year-to-Date)' : '1. Inventory-Adjusted Profit & Loss'}
+                {isYTD ? '1. Cumulative P&L (Year-to-Date)' : '1. Inventory-Adjusted Profit & Loss'} <span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: '4px', border: '1px solid #334155', fontSize: '8px', color: '#64748b' }}>v{APP_VERSION}</span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(0,0,0,0.2)', padding: '10px 16px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.05)', fontSize: 11, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', flexDirection: 'column' }}><span style={{color: 'var(--text3)'}}>Revenue</span><strong style={{color: 'var(--accent2)', fontFamily: 'var(--mono)'}}>{fmt(Math.round(totalRevenue))}</strong></div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(0,0,0,0.2)', padding: '10px 16px', borderRadius: 12, border: '1px solid rgba(255,255,255,0.05)', fontSize: 'clamp(9px, 2.5vw, 11px)', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{color: 'var(--text3)'}}>Revenue ({fmt(summary.totalSold || 0)} bags)</span>
+                  <strong style={{color: 'var(--accent2)', fontFamily: 'var(--mono)'}}>{fmt(Math.round(totalRevenue))}</strong>
+                </div>
                 <div style={{color: 'var(--text3)'}}>−</div>
-                <div style={{ display: 'flex', flexDirection: 'column' }}><span style={{color: 'var(--text3)'}}>Operating Expenses</span><strong style={{color: '#f59e0b', fontFamily: 'var(--mono)'}}>{fmt(Math.round(operatingCosts))}</strong></div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{color: 'var(--text3)'}}>Staff Salaries</span>
+                  <strong style={{color: '#f43f5e', fontFamily: 'var(--mono)'}}>{fmt(Math.round(totalLaborCosts))}</strong>
+                </div>
                 <div style={{color: 'var(--text3)'}}>−</div>
-                <div style={{ display: 'flex', flexDirection: 'column' }}><span style={{color: 'var(--text3)'}}>Cost of Goods Sold</span><strong style={{color: 'var(--danger)', fontFamily: 'var(--mono)'}}>{fmt(Math.round(materialCOGS))}</strong></div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{color: 'var(--text3)'}}>Electricity</span>
+                  <strong style={{color: '#f59e0b', fontFamily: 'var(--mono)'}}>{fmt(Math.round(electricityCosts))}</strong>
+                </div>
+                <div style={{color: 'var(--text3)'}}>−</div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{color: 'var(--text3)'}}>Rent</span>
+                  <strong style={{color: '#f59e0b', fontFamily: 'var(--mono)'}}>{fmt(Math.round(rentCosts))}</strong>
+                </div>
+                <div style={{color: 'var(--text3)'}}>−</div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{color: 'var(--text3)'}}>Material (COGS)</span>
+                  <strong style={{color: 'var(--danger)', fontFamily: 'var(--mono)'}}>{fmt(Math.round(matPortion || (materialCOGS - (masterBatchCost * (totalProducedBags > 0 ? totalSold / totalProducedBags : 0)))))}</strong>
+                </div>
+                <div style={{color: 'var(--text3)'}}>−</div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{color: 'var(--text3)'}}>Master Batch (Sold)</span>
+                  <strong style={{color: '#10b981', fontFamily: 'var(--mono)'}}>{fmt(Math.round(batchPortion || (masterBatchCost * (totalProducedBags > 0 ? totalSold / totalProducedBags : 0))))}</strong>
+                </div>
                 <div style={{color: 'var(--text3)'}}>＝</div>
-                <div style={{ display: 'flex', flexDirection: 'column' }}><span style={{color: 'var(--text3)'}}>Net Profit</span><strong style={{color: isProfit ? 'var(--accent2)' : 'var(--danger)', fontFamily: 'var(--mono)'}}>{fmt(Math.round(netProfit))}</strong></div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}><span style={{color: 'var(--text3)'}}>Operational Net</span><strong style={{color: isProfit ? 'var(--accent2)' : 'var(--danger)', fontFamily: 'var(--mono)'}}>{fmt(Math.round(netProfit))}</strong></div>
               </div>
             </div>
 
             {/* Inventory Assets */}
             <div style={{ flex: 1, minWidth: 280 }}>
               <div style={{ fontWeight: 800, color: 'var(--text2)', marginBottom: 8, textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.1em' }}>2. Factory Inventory Assets (Not Expensed){usingCrossMonthInventory ? <span style={{fontSize:8,color:'#f59e0b',marginLeft:8,fontWeight:700}}>★ CROSS-MONTH</span> : ''}</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(139,92,246,0.08)', padding: '10px 16px', borderRadius: 12, border: '1px solid rgba(139,92,246,0.2)', fontSize: 11, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(139,92,246,0.08)', padding: '10px 16px', borderRadius: 12, border: '1px solid rgba(139,92,246,0.2)', fontSize: 'clamp(9px, 2.5vw, 11px)', flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', flexDirection: 'column' }}><span style={{color: 'var(--text3)'}}>Raw Mat{usingCrossMonthInventory ? ' ★' : ''}</span><strong style={{color: '#a78bfa', fontFamily: 'var(--mono)'}}>{fmt(Math.round(effectiveRawMatAsset))}</strong><span style={{fontSize:9,color:'var(--text3)'}}>{(effectiveRawMatKg/1000).toFixed(2)} t · {fmt(Math.round(effectiveRawMatKg))} kg</span></div>
                 <div style={{color: 'var(--text3)'}}>+</div>
                 <div style={{ display: 'flex', flexDirection: 'column' }}><span style={{color: 'var(--text3)'}}>Unsold Goods</span><strong style={{color: '#a78bfa', fontFamily: 'var(--mono)'}}>{fmt(Math.round(finishedGoodsAssetVal))}</strong><span style={{fontSize:9,color:'var(--text3)'}}>{unsoldBags} bags · {unsoldBagsTons.toFixed(2)} t</span></div>
@@ -207,7 +310,7 @@ function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUp
         </div>
 
         {/* Mini stats stack */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 260 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: '1 1 260px' }}>
           {[
             { label: 'Total Revenue',            val: totalRevenue,        color: 'var(--accent2)' },
             { label: isYTD ? 'Total Year-to-Date Costs' : 'Operating Costs + Raw Material COGS', val: totalCosts, color: 'var(--danger)' },
