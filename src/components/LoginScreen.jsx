@@ -177,7 +177,7 @@ const LoginScreen = ({ setUser }) => {
         <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center' }}>
           <p className="login-v2-footer-text flex items-center justify-center gap-2" style={{ marginTop: 0 }}>
             <span>Secure Cloud Proxy Subsystem</span>
-            <span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: '4px', border: '1px solid #334155', fontSize: '8px', color: '#64748b' }}>v8.2.0</span>
+            <span style={{ background: '#1e293b', padding: '2px 6px', borderRadius: '4px', border: '1px solid #334155', fontSize: '8px', color: '#64748b' }}>v8.2.1</span>
           </p>
           
           <button 

@@ -1,4 +1,4 @@
 {
-  "version": "8.2.0",
-  "buildDate": "2026-04-23T11:23:00Z"
+  "version": "8.2.1",
+  "notes": "Fixed production audit bugs and enhanced auto-sync logic."
 }

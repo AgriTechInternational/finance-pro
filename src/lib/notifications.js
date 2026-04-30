@@ -165,32 +165,46 @@ export function detectChanges(prevData, newData) {
   if (!prevData || !newData) return [];
   const changes = [];
 
-  const prevSales = (prevData.sales || []).length;
-  const newSales  = (newData.sales  || []).length;
-  if (newSales > prevSales) {
-    const diff = newSales - prevSales;
+  // 1. Check Sales (Edits + Additions)
+  const prevSales = prevData.sales || [];
+  const newSales  = newData.sales || [];
+  if (newSales.length > prevSales.length) {
+    const diff = newSales.length - prevSales.length;
     changes.push({
       type: 'NEW_SALE',
       title: '💰 New Sale Recorded',
       body: `${diff} new sale${diff > 1 ? 's' : ''} added to Google Sheets`,
     });
+  } else if (newSales.length > 0 && prevSales.length > 0) {
+    // Check if the most recent sale was edited
+    const lastPrev = JSON.stringify(prevSales[prevSales.length - 1]);
+    const lastNew  = JSON.stringify(newSales[newSales.length - 1]);
+    if (lastPrev !== lastNew) {
+      changes.push({
+        type: 'EDIT_SALE',
+        title: '✏️ Sale Updated',
+        body: `A recent sale entry was modified in Google Sheets`,
+      });
+    }
   }
 
-  const prevExpenses = (prevData.expenses || []).length;
-  const newExpenses  = (newData.expenses  || []).length;
-  if (newExpenses > prevExpenses) {
-    const diff = newExpenses - prevExpenses;
+  // 2. Check Expenses
+  const prevExpenses = prevData.expenses || [];
+  const newExpenses  = newData.expenses || [];
+  if (newExpenses.length > prevExpenses.length) {
+    const diff = newExpenses.length - prevExpenses.length;
     changes.push({
       type: 'NEW_EXPENSE',
       title: '💸 New Expense Logged',
-      body: `${diff} new expense${diff > 1 ? 's' : ''} detected in Google Sheets`,
+      body: `${diff} new expense${diff > 1 ? 's' : ''} detected`,
     });
   }
 
-  const prevProd = (prevData.production || []).length;
-  const newProd  = (newData.production  || []).length;
-  if (newProd > prevProd) {
-    const diff = newProd - prevProd;
+  // 3. Check Production
+  const prevProd = prevData.production || [];
+  const newProd  = newData.production || [];
+  if (newProd.length > prevProd.length) {
+    const diff = newProd.length - prevProd.length;
     changes.push({
       type: 'NEW_PRODUCTION',
       title: '🏭 Production Update',
@@ -198,24 +212,14 @@ export function detectChanges(prevData, newData) {
     });
   }
 
-  const prevMaint = (prevData.maintenance || []).length;
-  const newMaint  = (newData.maintenance  || []).length;
-  if (newMaint > prevMaint) {
-    const diff = newMaint - prevMaint;
+  // 4. Check KPIs (Significant shifts)
+  const prevProfit = prevData.summary?.netProfit || 0;
+  const newProfit  = newData.summary?.netProfit  || 0;
+  if (Math.abs(newProfit - prevProfit) > 500) {
     changes.push({
-      type: 'NEW_MAINTENANCE',
-      title: '🔧 Maintenance Entry Added',
-      body: `${diff} new maintenance record${diff > 1 ? 's' : ''} added`,
-    });
-  }
-
-  const prevTons = prevData.summary?.totalProduced || 0;
-  const newTons  = newData.summary?.totalProduced  || 0;
-  if (newTons > prevTons + 0.5) {
-    changes.push({
-      type: 'PRODUCTION_KPI',
-      title: '🏭 Production KPI Updated',
-      body: `Total production is now ${newTons.toFixed(2)} tons`,
+      type: 'KPI_SHIFT',
+      title: '📈 Significant Profit Shift',
+      body: `Net Profit shifted by ${Math.round(newProfit - prevProfit).toLocaleString()} EGP`,
     });
   }
 

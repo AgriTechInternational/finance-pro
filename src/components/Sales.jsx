@@ -64,6 +64,20 @@ function Sales({ data, user, role, isAdmin, isSuper }) {
       ]);
       if (saleErr) throw saleErr;
 
+      // Auto-increment customer star in database-app
+      if (newSale.customer || tab) {
+        try {
+          const cName = newSale.customer || tab;
+          // Note: using the same supabase instance since they share a project
+          const { data: custData } = await supabase.from('db_customers').select('id, stars').ilike('org_name', cName).single();
+          if (custData) {
+            await supabase.from('db_customers').update({ stars: (custData.stars || 0) + 1 }).eq('id', custData.id);
+          }
+        } catch(err) {
+          console.warn("Failed to update customer stars", err);
+        }
+      }
+
       // 2. Log the Downpayment if any
       if (parseFloat(newSale.paid) > 0) {
         const { error: payErr } = await supabase.from(tables.TRANSACTIONS).insert([

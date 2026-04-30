@@ -173,10 +173,15 @@ export function parseGeneralReport(rows) {
       }
     }
     
-    // Capture specific production override
+    // Capture specific production override (Column C in GeneralReport)
     if (searchString.includes('achived total production')) {
-      const prodVal = rowNumbers.find(n => n > 0 && n < 100) || primaryVal;
-      if (prodVal > 0) totalProducedOverride = prodVal;
+      // Row structure: [Label, "", Bags, Percentage, ...]
+      const valInColC = num(row[2]);
+      if (valInColC > 0) {
+        totalProducedOverride = valInColC;
+      } else {
+        totalProducedOverride = rowNumbers.find(n => n > 0) || primaryVal;
+      }
       continue;
     }
 

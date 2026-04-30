@@ -32,7 +32,7 @@ async function fetchCSVByGid(sheetId, gid, timeoutMs = 15000) {
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   
   try {
-    const url = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+    const url = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}&cachebust=${Date.now()}`;
     const res  = await fetch(url, { signal: controller.signal });
     clearTimeout(timeoutId);
     if (!res.ok) return null;
@@ -51,7 +51,7 @@ async function fetchCSVByName(sheetId, tabName, timeoutMs = 15000) {
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   
   try {
-    const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tabName)}`;
+    const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(tabName)}&t=${Date.now()}`;
     const res  = await fetch(url, { signal: controller.signal });
     clearTimeout(timeoutId);
     if (!res.ok) return null;
@@ -135,18 +135,24 @@ export async function analyzeSingleSheetNatively(id, trueOpeningBalance, prevAvg
   // 2. Try LocalStorage Cache (Persistence across reloads)
   const persisted = localStorage.getItem(STORAGE_CACHE_KEY);
   const urlParams = new URLSearchParams(window.location.search);
+  // Bypass cache if "nuke" is true OR if it's been more than 5 minutes since the last sync
+  // Actually, for auto-refresh to work, we should just always check memory cache but skip localStorage if it's "stale"
   if (persisted && urlParams.get('nuke') !== 'true') {
     try {
       const parsed = JSON.parse(persisted);
-      // We still need to re-wrap with memory cache for efficiency
-      SHEET_CACHE.set(cacheKey, parsed);
-      return {
-        ...parsed,
-        summary: {
-          ...parsed.summary,
-          availableCash: (parsed.summary.totalRevenue - parsed.summary.actualCashSpent) + trueOpeningBalance
-        }
-      };
+      const cacheTime = parsed._cacheTime || 0;
+      const isStale = (Date.now() - cacheTime) > 300000; // 5 mins
+
+      if (!isStale) {
+        SHEET_CACHE.set(cacheKey, parsed);
+        return {
+          ...parsed,
+          summary: {
+            ...parsed.summary,
+            availableCash: (parsed.summary.totalRevenue - parsed.summary.actualCashSpent) + trueOpeningBalance
+          }
+        };
+      }
     } catch(e) { localStorage.removeItem(STORAGE_CACHE_KEY); }
   }
 
@@ -365,8 +371,8 @@ export async function analyzeSingleSheetNatively(id, trueOpeningBalance, prevAvg
    // A. Determine Total Bags Produced (Audited for March, Parser for others)
   const rawProduced = (id === MARCH_ID) ? 145 : (
     (generalSummary.totalProducedOverride > 0) 
-      ? (generalSummary.totalProducedOverride * 50) 
-      : (production.reduce((s, p) => s + p.total, 0) || (finishedGoods.reduce((s, g) => s + (g.qty || 0), 0)))
+      ? (generalSummary.totalProducedOverride) // Use override as BAG count directly
+      : (production.reduce((s, p) => s + (p.qty || p.total || 0), 0) || (finishedGoods.reduce((s, g) => s + (g.qty || 0), 0)))
   );
   // Safety: If no production but sales occur, we still need a non-zero denominator for portion calculations
   const auditedProducedBags = Math.max(1, rawProduced);
@@ -497,7 +503,7 @@ export async function analyzeSingleSheetNatively(id, trueOpeningBalance, prevAvg
   SHEET_CACHE.set(cacheKey, finalResult);
   // Persist for next session
   try {
-    localStorage.setItem(STORAGE_CACHE_KEY, JSON.stringify(finalResult));
+    localStorage.setItem(STORAGE_CACHE_KEY, JSON.stringify({ ...finalResult, _cacheTime: Date.now() }));
   } catch(e) { console.warn("Cache write failed (storage full?)", e); }
 
   return finalResult;
@@ -559,7 +565,15 @@ export function useSheetEngine(sheetId, months = []) {
     }
   }, [JSON.stringify(months), sheetId]);
 
-  useEffect(() => { load(false); }, [load]);
+  useEffect(() => { 
+    load(false); 
+    const interval = setInterval(() => {
+      console.log("[Engine] Background Auto-Refresh Triggered");
+      load(false); // background sync shouldn't clear cache, but bypass it if stale
+    }, REFRESH_MS);
+    return () => clearInterval(interval);
+  }, [load]);
+
   return { ...state, refresh: () => load(true) };
 }
 

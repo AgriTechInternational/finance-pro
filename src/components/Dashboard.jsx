@@ -5,7 +5,7 @@ const fmt = (n) => Number(n || 0).toLocaleString('en-US');
 
 function Dashboard({ data, role, monthLabel, onRefresh, newUpdates = [], clearUpdates, carryForward, isYTD, globalStats = {}, loadingStage, error }) {
   const [updateAvailable, setUpdateAvailable] = React.useState(null);
-  const APP_VERSION = '8.2.0'; // HARDCODED: Must match version.json
+  const APP_VERSION = '8.2.1'; // HARDCODED: Must match version.json
 
   // 🔄 AUTO-UPDATER: Poll for new versions every 60s
   React.useEffect(() => {
