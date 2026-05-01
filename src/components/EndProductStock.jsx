@@ -10,6 +10,7 @@ export default function EndProductStock({ data }) {
   const totalProducedKg    = data?.summary?.totalProducedKg   || 0; // kg
   const totalProducedBags  = data?.summary?.totalProducedBags || 0;
   const rawMaterialStockKg = data?.summary?.rawMaterialStock  || 0; // kg
+  const unsoldBags         = data?.summary?.unsoldBags        || 0;
   const conversionRatio    = data?.summary?.conversionRatio   || 0;
 
   return (
@@ -48,7 +49,6 @@ export default function EndProductStock({ data }) {
         </div>
       </div>
 
-      {/* Secondary KPIs */}
       <div
         style={{
           display: 'grid',
@@ -57,6 +57,19 @@ export default function EndProductStock({ data }) {
           marginBottom: 28,
         }}
       >
+        <div className="card shadow-soft" style={{ padding: 28, borderLeft: '4px solid var(--accent2)' }}>
+          <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.15em', color: 'var(--accent2)', marginBottom: 10 }}>
+            🏭 Factory Inventory
+          </div>
+          <div style={{ fontSize: 36, fontWeight: 800, color: 'var(--text1)', fontFamily: 'var(--mono)', lineHeight: 1 }}>
+            {fmtBags(unsoldBags)}
+            <span style={{ fontSize: 16, marginLeft: 8, opacity: 0.5 }}>bags</span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 8 }}>
+            Unsold finished goods remaining in factory
+          </div>
+        </div>
+
         <div className="card shadow-soft" style={{ padding: 28, borderLeft: '4px solid var(--accent)' }}>
           <div style={{ fontSize: 10, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.15em', color: 'var(--accent)', marginBottom: 10 }}>
             📦 Raw Material Input (X)
