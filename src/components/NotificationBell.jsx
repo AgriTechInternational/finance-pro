@@ -219,10 +219,10 @@ function NotificationBell({ onPermissionGranted }) {
                     <div style={{ fontWeight: n.read ? 500 : 700, fontSize: 13, color: '#f1f5f9', marginBottom: 3 }}>
                       {n.title}
                     </div>
-                    <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 5, lineHeight: 1.5 }}>
+                    <div style={{ fontSize: 12, color: '#cbd5e1', marginBottom: 5, lineHeight: 1.5 }}>
                       {n.body}
                     </div>
-                    <div style={{ fontSize: 10, color: '#475569', fontWeight: 500 }}>
+                    <div style={{ fontSize: 10, color: '#94a3b8', fontWeight: 500 }}>
                       {fmt(n.timestamp)}
                     </div>
                   </div>
