@@ -140,7 +140,7 @@ function NotificationBell({ onPermissionGranted }) {
           <div style={{
             position: 'absolute', top: 'calc(100% + 12px)', right: 0,
             width: 380,
-            background: '#0f172a',
+            background: '#000000 !important',
             backdropFilter: 'blur(20px)',
             border: '1px solid rgba(255,255,255,0.12)',
             borderRadius: 18,
