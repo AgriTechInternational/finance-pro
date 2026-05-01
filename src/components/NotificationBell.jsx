@@ -140,10 +140,11 @@ function NotificationBell({ onPermissionGranted }) {
           <div style={{
             position: 'absolute', top: 'calc(100% + 12px)', right: 0,
             width: 380,
-            background: 'linear-gradient(145deg, #1a1d2e, #141622)',
+            background: '#0f172a',
+            backdropFilter: 'blur(20px)',
             border: '1px solid rgba(255,255,255,0.12)',
             borderRadius: 18,
-            boxShadow: '0 25px 80px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.05)',
+            boxShadow: '0 25px 80px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.08)',
             zIndex: 10000, overflow: 'hidden',
           }}>
             {/* Header */}
