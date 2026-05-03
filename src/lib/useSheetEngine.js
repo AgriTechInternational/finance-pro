@@ -369,7 +369,7 @@ export async function analyzeSingleSheetNatively(id, trueOpeningBalance, prevAvg
   // ── 5. FINAL AUDITED PRODUCTION & MATERIAL LOGIC ──
 
    // A. Determine Total Bags Produced (Audited for March, Parser for others)
-  const rawProduced = (id === MARCH_ID) ? 145 : (
+  const rawProduced = (id === MARCH_ID) ? 115 : (
     (generalSummary.totalProducedOverride > 0) 
       ? (generalSummary.totalProducedOverride) // Use override as BAG count directly
       : (production.reduce((s, p) => s + (p.qty || p.total || 0), 0) || (finishedGoods.reduce((s, g) => s + (g.qty || 0), 0)))
